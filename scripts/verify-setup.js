@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Verify platform setup for @micim/react-native-geolocation
- * Run from app root: node node_modules/@micim/react-native-geolocation/scripts/verify-setup.js
+ * Verify platform setup for @micim/geo
+ * Run from app root: node node_modules/@micim/geo/scripts/verify-setup.js
  */
 
 const fs = require('fs');

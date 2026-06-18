@@ -1,13 +1,13 @@
 # Platform Setup Guide
 
-What **@micim/react-native-geolocation** handles automatically vs what you must add to your app.
+What **@micim/geo** handles automatically vs what you must add to your app.
 
 ---
 
 ## Quick install
 
 ```bash
-yarn add @micim/react-native-geolocation
+yarn add @micim/geo
 cd ios && pod install
 ```
 
@@ -41,7 +41,7 @@ The native module auto-links via React Native autolinking. No manual `AppDelegat
 ### 3. Request permissions in app (SDK provides API)
 
 ```javascript
-import Geolocation, { PermissionManager } from '@micim/react-native-geolocation';
+import Geolocation, { PermissionManager } from '@micim/geo';
 
 // Full fitness flow (foreground → background)
 const result = await PermissionManager.requestFitnessPermissions();
@@ -133,9 +133,9 @@ await PermissionManager.requestFitnessPermissions();
 ## Verify setup
 
 ```bash
-npx @micim/react-native-geolocation verify-setup
+npx @micim/geo verify-setup
 # or from package:
-node node_modules/@micim/react-native-geolocation/scripts/verify-setup.js
+node node_modules/@micim/geo/scripts/verify-setup.js
 ```
 
 ---

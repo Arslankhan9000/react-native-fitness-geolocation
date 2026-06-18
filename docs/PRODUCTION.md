@@ -1,4 +1,4 @@
-# Production Guide — @micim/react-native-geolocation
+# Production Guide — @micim/geo
 
 Engineering reference for deploying and maintaining the Micim fitness GPS SDK in production.
 
@@ -8,11 +8,11 @@ Engineering reference for deploying and maintaining the Micim fitness GPS SDK in
 
 | | |
 |---|---|
-| **Package** | `@micim/react-native-geolocation` v2.0.0 |
+| **Package** | `@micim/geo` v2.0.0 |
 | **Type** | React Native native module |
 | **Replaces** | `@react-native-community/geolocation` (activity tracking) |
 | **Production app** | MFC-App (My Fitness Coach) |
-| **Install** | `file:../packages/react-native-micim-geolocation` |
+| **Install** | `file:../packages/micim-geo` |
 
 ---
 
@@ -33,7 +33,7 @@ Engineering reference for deploying and maintaining the Micim fitness GPS SDK in
 
 ```json
 // MFC-App/package.json
-"@micim/react-native-geolocation": "file:../packages/react-native-micim-geolocation"
+"@micim/geo": "file:../packages/micim-geo"
 ```
 
 ```bash
@@ -45,16 +45,16 @@ cd ios && pod install
 
 ```javascript
 // LocationTrackingService.js
-import Geolocation from '@micim/react-native-geolocation';
+import Geolocation from '@micim/geo';
 
 // LocationService.js
-import Geolocation from '@micim/react-native-geolocation';
+import Geolocation from '@micim/geo';
 ```
 
 ### Step 3 — Verify platform config
 
 ```bash
-node node_modules/@micim/react-native-geolocation/scripts/verify-setup.js
+node node_modules/@micim/geo/scripts/verify-setup.js
 ```
 
 MFC-App already passes all checks.
@@ -104,7 +104,7 @@ Or use `FitnessEngine.setPaused()` / auto-pause via `MotionEngine`.
 ### Essential (drop-in)
 
 ```javascript
-import Geolocation from '@micim/react-native-geolocation';
+import Geolocation from '@micim/geo';
 
 // Same as @react-native-community/geolocation
 Geolocation.watchPosition(success, error, {
@@ -136,7 +136,7 @@ const state = await Geolocation.getEngineState();
 ### Permissions (recommended for StartActivityScreen)
 
 ```javascript
-import { PermissionManager } from '@micim/react-native-geolocation';
+import { PermissionManager } from '@micim/geo';
 
 const result = await PermissionManager.requestFitnessPermissions();
 
@@ -149,7 +149,7 @@ if (result.status === 'foreground_only') {
 ### Auto-pause integration (optional)
 
 ```javascript
-import { MotionEngine } from '@micim/react-native-geolocation';
+import { MotionEngine } from '@micim/geo';
 import { DeviceEventEmitter } from 'react-native';
 
 MotionEngine.onAutoPause(() => toggleTracking('auto'));
@@ -261,6 +261,6 @@ Original design doc: `/smart-location-engine-v1.md` (repo root)
 
 ## Support & ownership
 
-- **Package path:** `packages/react-native-micim-geolocation/`
+- **Package path:** `packages/micim-geo/`
 - **Docs:** `docs/` folder + `AGENTS.md`
 - **Competitive analysis:** [COMPETITIVE_RESEARCH.md](./COMPETITIVE_RESEARCH.md)

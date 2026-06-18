@@ -1,6 +1,6 @@
 # Competitive Research — Strava, Nike Run Club, Garmin, Fitbit
 
-How top fitness apps solve GPS activity tracking, and what **@micim/react-native-geolocation** implements vs documents for app-level integration.
+How top fitness apps solve GPS activity tracking, and what **@micim/geo** implements vs documents for app-level integration.
 
 ---
 
