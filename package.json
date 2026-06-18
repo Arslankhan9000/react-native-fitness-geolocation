@@ -1,0 +1,72 @@
+{
+  "name": "@micim/geo",
+  "version": "2.0.0",
+  "description": "Native fitness GPS engine for React Native — drop-in background tracking with SQLite persistence",
+  "main": "lib/commonjs/index.js",
+  "module": "lib/module/index.js",
+  "types": "lib/typescript/index.d.ts",
+  "react-native": "src/index.ts",
+  "source": "src/index.ts",
+  "files": [
+    "src",
+    "lib",
+    "ios",
+    "android",
+    "docs",
+    "scripts",
+    "react-native.config.js",
+    "MicimGeolocation.podspec",
+    "AGENTS.md",
+    "!**/__tests__",
+    "!**/__fixtures__",
+    "!**/__mocks__"
+  ],
+  "scripts": {
+    "prepare": "bob build",
+    "typescript": "tsc --noEmit",
+    "verify-setup": "node scripts/verify-setup.js"
+  },
+  "keywords": [
+    "react-native",
+    "geolocation",
+    "gps",
+    "fitness",
+    "background-location",
+    "strava",
+    "activity-tracking",
+    "corelocation"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/micim/geo.git"
+  },
+  "bugs": {
+    "url": "https://github.com/micim/geo/issues"
+  },
+  "homepage": "https://github.com/micim/geo#readme",
+  "author": "Micim",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "peerDependencies": {
+    "react": "*",
+    "react-native": ">=0.73.0"
+  },
+  "devDependencies": {
+    "react": "19.0.0",
+    "react-native": "0.79.7",
+    "react-native-builder-bob": "^0.40.6",
+    "typescript": "^5.0.4"
+  },
+  "react-native-builder-bob": {
+    "source": "src",
+    "output": "lib",
+    "targets": [
+      "commonjs",
+      "module",
+      "typescript"
+    ]
+  }
+}
