@@ -50,7 +50,7 @@ final class LocationEngine: NSObject {
   private var nextWatchId = 1
   private var isPaused = false
 
-  private let watchStateKey = "com.micim.geolocation.watchActive"
+  private let watchStateKey = "com.fitnessgeolocation.watchActive"
 
   private override init() {
     super.init()
@@ -123,15 +123,19 @@ final class LocationEngine: NSObject {
 
   // MARK: - Geolocation API
 
-  func getCurrentPosition(completion: @escaping (Result<StoredLocation, Error>) -> Void) {
+  func getCurrentPosition(options: [String: Any] = [:], completion: @escaping (Result<StoredLocation, Error>) -> Void) {
     guard CLLocationManager.locationServicesEnabled() else {
-      completion(.failure(NSError(domain: "MicimGeolocation", code: 2,
+      completion(.failure(NSError(domain: "FitnessGeolocation", code: 2,
         userInfo: [NSLocalizedDescriptionKey: "Location services disabled"])))
       return
     }
-    if let last = lastLocation, abs(last.timestamp.timeIntervalSinceNow) < 30 {
-      completion(.success(makeStored(from: last, delivered: true)))
-      return
+    let maximumAgeMs = (options["maximumAge"] as? NSNumber)?.doubleValue ?? 0
+    if let last = lastLocation {
+      let ageMs = abs(last.timestamp.timeIntervalSinceNow) * 1000
+      if maximumAgeMs <= 0 || ageMs <= maximumAgeMs {
+        completion(.success(makeStored(from: last, delivered: true)))
+        return
+      }
     }
     locationManager.requestLocation()
     pendingSingleFixCompletion = completion
@@ -219,7 +223,7 @@ final class LocationEngine: NSObject {
 
   private func persistWatchState() {
     UserDefaults.standard.set(true, forKey: watchStateKey)
-    UserDefaults.standard.set(mode.rawValue, forKey: "com.micim.geolocation.mode")
+    UserDefaults.standard.set(mode.rawValue, forKey: "com.fitnessgeolocation.mode")
   }
 
   private func clearWatchState() {

@@ -12,3 +12,6 @@ android/.gradle/
 coverage/
 .env
 .env.*
+.pnp.cjs
+.pnp.loader.mjs
+.yarn/

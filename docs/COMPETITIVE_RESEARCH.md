@@ -1,12 +1,12 @@
 # Competitive Research — Strava, Nike Run Club, Garmin, Fitbit
 
-How top fitness apps solve GPS activity tracking, and what **@micim/geo** implements vs documents for app-level integration.
+How top fitness apps solve GPS activity tracking, and what **react-native-fitness-geolocation** implements vs documents for app-level integration.
 
 ---
 
 ## Executive summary
 
-| Capability | Strava | Nike RC | Garmin | Fitbit | **Micim SDK** |
+| Capability | Strava | Nike RC | Garmin | Fitbit | **react-native-fitness-geolocation** |
 |------------|--------|---------|--------|--------|---------------|
 | Native background GPS | ✅ | ✅ | ✅ (watch) / ✅ (phone) | ✅ Connected GPS | ✅ **Built-in** |
 | Write-first crash-safe queue | ✅ | ✅ | ✅ | ✅ | ✅ **SQLite native** |
@@ -36,7 +36,7 @@ How top fitness apps solve GPS activity tracking, and what **@micim/geo** implem
 6. **Privacy** — Hides start/end address zones (~100m radius).
 7. **Battery** — Pauses location updates when activity paused; uses deferred updates where possible.
 
-### Micim equivalent
+### Package equivalent
 - `Geolocation.watchPosition` with fitness options → native engine
 - `FitnessEngine.onAutoPause` → motion + GPS fusion
 - `LocationFilter` → accuracy + spike rejection
@@ -53,7 +53,7 @@ How top fitness apps solve GPS activity tracking, and what **@micim/geo** implem
 4. **Lock screen / background** — Relies on iOS background location + audio session for guided runs.
 5. **Pace smoothing** — Rolling window over filtered GPS segments.
 
-### Micim equivalent
+### Package equivalent
 - Native persistence survives screen lock
 - `FitnessEngine.getMotionState()` for UI pace hints
 - HealthKit → document in SETUP.md
@@ -70,7 +70,7 @@ How top fitness apps solve GPS activity tracking, and what **@micim/geo** implem
 5. **Offline queue** — Device stores points; syncs on reconnect.
 6. **Adaptive recording** — 1s interval moving, 60s interval stationary.
 
-### Micim equivalent
+### Package equivalent
 - `setMode('fitness' | 'balanced' | 'low_power' | 'stationary')` adaptive sampling
 - `MotionEngine` activity type: walking, running, cycling, driving, stationary
 - Native SQLite offline queue with foreground drain
@@ -86,7 +86,7 @@ How top fitness apps solve GPS activity tracking, and what **@micim/geo** implem
 3. **Auto workout detection** — Motion activity API triggers "workout started" prompt.
 4. **Zone-based HR** — Watch hardware; app layer for phone-only.
 
-### Micim equivalent
+### Package equivalent
 - `MotionEngine.start()` + `onActivityChange` event
 - `PedometerBridge` (iOS CMPedometer) optional steps stream
 - Auto workout detection → `FitnessEngine.onWorkoutDetected`
@@ -105,9 +105,9 @@ CLLocationManager
   allowsBackgroundLocationUpdates = true     ← requires Always auth
   showsBackgroundLocationIndicator = true
 
-+ CLBackgroundActivitySession (iOS 17+)      ← Micim implements
-+ CMMotionActivityManager                    ← Micim implements  
-+ CMPedometer (optional steps)               ← Micim implements
++ CLBackgroundActivitySession (iOS 17+)      ← implemented
++ CMMotionActivityManager                    ← implemented  
++ CMPedometer (optional steps)               ← implemented
 ```
 
 ### Android
@@ -116,7 +116,7 @@ CLLocationManager
 FusedLocationProviderClient
   PRIORITY_HIGH_ACCURACY while recording
   Foreground Service type=location           ← app manifest + background-actions
-  ActivityRecognitionClient                  ← Micim implements
+  ActivityRecognitionClient                  ← implemented
   WorkManager restart watchdog               ← documented for app
 ```
 

@@ -1,7 +1,7 @@
 {
-  "name": "@micim/geo",
+  "name": "react-native-fitness-geolocation",
   "version": "2.0.0",
-  "description": "Native fitness GPS engine for React Native — drop-in background tracking with SQLite persistence",
+  "description": "React Native fitness GPS — background activity tracking, native SQLite persistence, motion auto-pause. Drop-in geolocation for Strava-class apps.",
   "main": "lib/commonjs/index.js",
   "module": "lib/module/index.js",
   "types": "lib/typescript/index.d.ts",
@@ -15,41 +15,46 @@
     "docs",
     "scripts",
     "react-native.config.js",
-    "MicimGeolocation.podspec",
+    "FitnessGeolocation.podspec",
     "AGENTS.md",
     "!**/__tests__",
     "!**/__fixtures__",
     "!**/__mocks__"
   ],
   "scripts": {
-    "prepare": "bob build",
+    "prepare": "node scripts/ensure-lib.js",
+    "prepublishOnly": "yarn bob build",
     "typescript": "tsc --noEmit",
     "verify-setup": "node scripts/verify-setup.js"
   },
   "keywords": [
     "react-native",
-    "geolocation",
-    "gps",
-    "fitness",
+    "react-native-geolocation",
+    "react-native-fitness",
+    "react-native-gps",
+    "react-native-background-geolocation",
     "background-location",
-    "strava",
+    "fitness-tracking",
     "activity-tracking",
-    "corelocation"
+    "gps-tracker",
+    "workout-tracker",
+    "running-app",
+    "cycling-app",
+    "corelocation",
+    "sqlite",
+    "native-module"
   ],
+  "author": "Arslan Khan (https://github.com/Arslankhan9000)",
+  "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/micim/geo.git"
+    "url": "https://github.com/Arslankhan9000/react-native-fitness-geolocation.git"
   },
   "bugs": {
-    "url": "https://github.com/micim/geo/issues"
+    "url": "https://github.com/Arslankhan9000/react-native-fitness-geolocation/issues"
   },
-  "homepage": "https://github.com/micim/geo#readme",
-  "author": "Micim",
-  "license": "MIT",
-  "publishConfig": {
-    "access": "public",
-    "registry": "https://registry.npmjs.org/"
-  },
+  "homepage": "https://github.com/Arslankhan9000/react-native-fitness-geolocation#readme",
+  "bin": "scripts/verify-setup.js",
   "peerDependencies": {
     "react": "*",
     "react-native": ">=0.73.0"
@@ -68,5 +73,6 @@
       "module",
       "typescript"
     ]
-  }
+  },
+  "packageManager": "yarn@4.15.0+sha512.07ec708ac11e2eaa4ea2b04cfbb272812f7e74a753f1595eaef4486c663a98306a30cca3e6fc40f7a0b168dcfb3a2490b6a5e0501e20fb69cc36f563dd161c53"
 }

@@ -23,7 +23,7 @@ final class LocationDatabase {
   static let shared = LocationDatabase()
 
   private var db: OpaquePointer?
-  private let queue = DispatchQueue(label: "com.micim.geolocation.database", qos: .userInitiated)
+  private let queue = DispatchQueue(label: "com.fitnessgeolocation.database", qos: .userInitiated)
 
   private init() {
     openDatabase()
@@ -37,12 +37,12 @@ final class LocationDatabase {
 
   private var dbPath: String {
     let dir = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first!
-    return (dir as NSString).appendingPathComponent("micim_geolocation.db")
+    return (dir as NSString).appendingPathComponent("fitness_geolocation.db")
   }
 
   private func openDatabase() {
     if sqlite3_open(dbPath, &db) != SQLITE_OK {
-      print("[MicimGeolocation] Failed to open database")
+      print("[FitnessGeolocation] Failed to open database")
     }
   }
 

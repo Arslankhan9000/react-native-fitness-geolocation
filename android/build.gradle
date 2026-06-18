@@ -10,7 +10,7 @@ def safeExtGet(prop, fallback) {
 }
 
 android {
-  namespace "com.micim.geolocation"
+  namespace "com.fitnessgeolocation"
   compileSdkVersion safeExtGet('compileSdkVersion', 34)
 
   defaultConfig {

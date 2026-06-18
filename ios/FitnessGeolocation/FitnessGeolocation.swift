@@ -1,8 +1,8 @@
 import Foundation
 import React
 
-@objc(MicimGeolocation)
-class MicimGeolocation: RCTEventEmitter, LocationEngineDelegate, MotionEngineDelegate {
+@objc(FitnessGeolocation)
+class FitnessGeolocation: RCTEventEmitter, LocationEngineDelegate, MotionEngineDelegate {
   private let engine = LocationEngine.shared
   private let motion = MotionEngine.shared
   private var hasListeners = false
@@ -29,7 +29,7 @@ class MicimGeolocation: RCTEventEmitter, LocationEngineDelegate, MotionEngineDel
   func getCurrentPosition(_ options: NSDictionary,
                           resolver resolve: @escaping RCTPromiseResolveBlock,
                           rejecter reject: @escaping RCTPromiseRejectBlock) {
-    engine.getCurrentPosition { result in
+    engine.getCurrentPosition(options: options as? [String: Any] ?? [:]) { result in
       switch result {
       case .success(let loc): resolve(loc.toPositionDictionary())
       case .failure(let e): reject("POSITION_UNAVAILABLE", e.localizedDescription, e)
@@ -45,8 +45,8 @@ class MicimGeolocation: RCTEventEmitter, LocationEngineDelegate, MotionEngineDel
   @objc(clearWatch:)
   func clearWatch(_ watchId: NSNumber) { engine.clearWatch(watchId.intValue) }
 
-  @objc(stopObserving)
-  func stopObservingNative() { engine.stopObserving() }
+  @objc(stopLocationObserving)
+  func stopLocationObserving() { engine.stopObserving() }
 
   @objc(getPendingForJs:resolver:rejecter:)
   func getPendingForJs(_ limit: NSNumber, resolver resolve: @escaping RCTPromiseResolveBlock,

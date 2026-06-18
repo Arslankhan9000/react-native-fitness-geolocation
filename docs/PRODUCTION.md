@@ -1,6 +1,6 @@
-# Production Guide — @micim/geo
+# Production Guide — react-native-fitness-geolocation
 
-Engineering reference for deploying and maintaining the Micim fitness GPS SDK in production.
+Engineering reference for deploying and maintaining react-native-fitness-geolocation in production.
 
 ---
 
@@ -8,11 +8,11 @@ Engineering reference for deploying and maintaining the Micim fitness GPS SDK in
 
 | | |
 |---|---|
-| **Package** | `@micim/geo` v2.0.0 |
+| **Package** | `react-native-fitness-geolocation` v2.0.0 |
 | **Type** | React Native native module |
 | **Replaces** | `@react-native-community/geolocation` (activity tracking) |
 | **Production app** | MFC-App (My Fitness Coach) |
-| **Install** | `file:../packages/micim-geo` |
+| **Install** | `file:../packages/react-native-fitness-geolocation` |
 
 ---
 
@@ -33,7 +33,7 @@ Engineering reference for deploying and maintaining the Micim fitness GPS SDK in
 
 ```json
 // MFC-App/package.json
-"@micim/geo": "file:../packages/micim-geo"
+"react-native-fitness-geolocation": "file:../packages/react-native-fitness-geolocation"
 ```
 
 ```bash
@@ -45,16 +45,16 @@ cd ios && pod install
 
 ```javascript
 // LocationTrackingService.js
-import Geolocation from '@micim/geo';
+import Geolocation from 'react-native-fitness-geolocation';
 
 // LocationService.js
-import Geolocation from '@micim/geo';
+import Geolocation from 'react-native-fitness-geolocation';
 ```
 
 ### Step 3 — Verify platform config
 
 ```bash
-node node_modules/@micim/geo/scripts/verify-setup.js
+node node_modules/react-native-fitness-geolocation/scripts/verify-setup.js
 ```
 
 MFC-App already passes all checks.
@@ -104,7 +104,7 @@ Or use `FitnessEngine.setPaused()` / auto-pause via `MotionEngine`.
 ### Essential (drop-in)
 
 ```javascript
-import Geolocation from '@micim/geo';
+import Geolocation from 'react-native-fitness-geolocation';
 
 // Same as @react-native-community/geolocation
 Geolocation.watchPosition(success, error, {
@@ -136,7 +136,7 @@ const state = await Geolocation.getEngineState();
 ### Permissions (recommended for StartActivityScreen)
 
 ```javascript
-import { PermissionManager } from '@micim/geo';
+import { PermissionManager } from 'react-native-fitness-geolocation';
 
 const result = await PermissionManager.requestFitnessPermissions();
 
@@ -149,7 +149,7 @@ if (result.status === 'foreground_only') {
 ### Auto-pause integration (optional)
 
 ```javascript
-import { MotionEngine } from '@micim/geo';
+import { MotionEngine } from 'react-native-fitness-geolocation';
 import { DeviceEventEmitter } from 'react-native';
 
 MotionEngine.onAutoPause(() => toggleTracking('auto'));
@@ -186,11 +186,11 @@ See [SETUP.md](./SETUP.md) for full copy-paste snippets.
 
 | Component | Platform | File |
 |-----------|----------|------|
-| LocationEngine | iOS | `ios/MicimGeolocation/LocationEngine.swift` |
-| LocationDatabase | iOS | `ios/MicimGeolocation/LocationDatabase.swift` |
-| LocationFilter | iOS | `ios/MicimGeolocation/LocationFilter.swift` |
-| MotionEngine | iOS | `ios/MicimGeolocation/MotionEngine.swift` |
-| BackgroundActivitySession | iOS 17+ | `ios/MicimGeolocation/BackgroundActivitySession.swift` |
+| LocationEngine | iOS | `ios/FitnessGeolocation/LocationEngine.swift` |
+| LocationDatabase | iOS | `ios/FitnessGeolocation/LocationDatabase.swift` |
+| LocationFilter | iOS | `ios/FitnessGeolocation/LocationFilter.swift` |
+| MotionEngine | iOS | `ios/FitnessGeolocation/MotionEngine.swift` |
+| BackgroundActivitySession | iOS 17+ | `ios/FitnessGeolocation/BackgroundActivitySession.swift` |
 | LocationEngine | Android | `android/.../LocationEngine.kt` |
 | LocationDatabase | Android | `android/.../LocationDatabase.kt` |
 | Geolocation (JS) | Both | `src/Geolocation.ts` |
@@ -203,7 +203,7 @@ See [SETUP.md](./SETUP.md) for full copy-paste snippets.
 |---------|--------------|-----|
 | No GPS when screen locked | When In Use only permission | Request Always; check Settings |
 | Route gaps after unlock | Drain not running | Call `syncPendingLocations()`; ensure watch still active |
-| Module not found | Pod not linked | `pod install`; rebuild; check `MicimGeolocation.podspec` at package root |
+| Module not found | Pod not linked | `pod install`; rebuild; check `FitnessGeolocation.podspec` at package root |
 | Background indicator missing | iOS config | Set `showsBackgroundLocationIndicator: true` |
 | Points duplicated | — | Should not happen; `delivered_to_js` prevents double replay |
 | Battery drain high | Mode too aggressive | Use `setTrackingMode('balanced')` or `'low_power'` |
@@ -220,7 +220,7 @@ await Geolocation.syncPendingLocations();
 ### Logs to watch
 
 ```
-[MicimGeolocation] Synced N background points to Realm
+[FitnessGeolocation] Delivered N queued background location(s)
 ```
 
 ---
@@ -261,6 +261,6 @@ Original design doc: `/smart-location-engine-v1.md` (repo root)
 
 ## Support & ownership
 
-- **Package path:** `packages/micim-geo/`
+- **Package path:** `packages/react-native-fitness-geolocation/`
 - **Docs:** `docs/` folder + `AGENTS.md`
 - **Competitive analysis:** [COMPETITIVE_RESEARCH.md](./COMPETITIVE_RESEARCH.md)

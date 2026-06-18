@@ -1,4 +1,4 @@
-package com.micim.geolocation
+package com.fitnessgeolocation
 
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
@@ -6,7 +6,7 @@ import android.database.sqlite.SQLiteOpenHelper
 
 class LocationDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 2) {
   companion object {
-    private const val DB_NAME = "micim_geolocation.db"
+    private const val DB_NAME = "fitness_geolocation.db"
   }
 
   override fun onCreate(db: SQLiteDatabase) {

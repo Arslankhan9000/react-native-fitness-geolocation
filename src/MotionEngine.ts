@@ -1,7 +1,7 @@
 import { NativeEventEmitter, NativeModules } from 'react-native';
 import type { MotionActivityType } from './types';
 
-const Native = NativeModules.MicimGeolocation;
+const Native = NativeModules.FitnessGeolocation;
 const emitter = new NativeEventEmitter(Native);
 
 export interface MotionActivityEvent {

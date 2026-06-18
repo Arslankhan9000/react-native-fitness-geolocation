@@ -1,7 +1,7 @@
 #import <React/RCTBridgeModule.h>
 #import <React/RCTEventEmitter.h>
 
-@interface RCT_EXTERN_MODULE(MicimGeolocation, RCTEventEmitter)
+@interface RCT_EXTERN_MODULE(FitnessGeolocation, RCTEventEmitter)
 
 RCT_EXTERN_METHOD(getCurrentPosition:(NSDictionary *)options
                   resolver:(RCTPromiseResolveBlock)resolve
@@ -9,7 +9,7 @@ RCT_EXTERN_METHOD(getCurrentPosition:(NSDictionary *)options
 
 RCT_EXTERN_METHOD(watchPosition:(NSDictionary *)options)
 RCT_EXTERN_METHOD(clearWatch:(nonnull NSNumber *)watchId)
-RCT_EXTERN_METHOD(stopObserving)
+RCT_EXTERN_METHOD(stopLocationObserving)
 
 RCT_EXTERN_METHOD(getPendingForJs:(nonnull NSNumber *)limit
                   resolver:(RCTPromiseResolveBlock)resolve

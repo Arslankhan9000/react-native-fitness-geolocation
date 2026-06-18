@@ -1,4 +1,4 @@
-package com.micim.geolocation
+package com.fitnessgeolocation
 
 import android.content.Context
 import com.google.android.gms.location.ActivityRecognition

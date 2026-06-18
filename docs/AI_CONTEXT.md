@@ -1,4 +1,4 @@
-# AI Context Document — @micim/geo v2
+# AI Context Document — react-native-fitness-geolocation v2
 
 Structured reference for AI coding assistants. Last updated: June 2026.
 
@@ -6,11 +6,11 @@ Structured reference for AI coding assistants. Last updated: June 2026.
 
 ## 1. Executive summary
 
-`@micim/geo` is a React Native native module that replaces `@react-native-community/geolocation` for fitness activity tracking. It provides Strava-class reliability: native background GPS, SQLite persistence, motion intelligence, and automatic sync to JS when the app returns to foreground.
+`react-native-fitness-geolocation` is a React Native native module that replaces `@react-native-community/geolocation` for fitness activity tracking. It provides Strava-class reliability: native background GPS, SQLite persistence, motion intelligence, and automatic sync to JS when the app returns to foreground.
 
 **Primary consumer:** MFC-App (`My Fitness Coach`) — physical activity tracking screen.
 
-**Install path:** `file:../packages/micim-geo` (monorepo local package).
+**Install path:** `file:../packages/react-native-fitness-geolocation` (monorepo local package).
 
 ---
 
@@ -90,7 +90,7 @@ Structured reference for AI coding assistants. Last updated: June 2026.
 ### 4.1 Geolocation (drop-in — default export)
 
 ```typescript
-import Geolocation from '@micim/geo';
+import Geolocation from 'react-native-fitness-geolocation';
 
 Geolocation.getCurrentPosition(success, error?, options?);
 Geolocation.watchPosition(success, error?, options?): number;  // watchId
@@ -101,7 +101,7 @@ Geolocation.requestAuthorization(success, error);  // community callback style
 Geolocation.getAuthorizationStatus(): Promise<{ status, always }>;
 Geolocation.setRNConfiguration(config);  // no-op compat
 
-// Micim extensions
+// Fitness geolocation extensions
 Geolocation.syncPendingLocations(): Promise<number>;
 Geolocation.getQueueSize(): Promise<number>;
 Geolocation.setTrackingMode(mode): Promise<void>;
@@ -112,7 +112,7 @@ Geolocation.getEngineState(): Promise<object>;
 ### 4.2 PermissionManager
 
 ```typescript
-import { PermissionManager } from '@micim/geo';
+import { PermissionManager } from 'react-native-fitness-geolocation';
 
 await PermissionManager.requestFitnessPermissions();
 // → { foregroundGranted, backgroundGranted, status: 'ready' | 'foreground_only' | 'denied' }
@@ -125,7 +125,7 @@ PermissionManager.openBatterySettings();  // Android
 ### 4.3 MotionEngine
 
 ```typescript
-import { MotionEngine } from '@micim/geo';
+import { MotionEngine } from 'react-native-fitness-geolocation';
 
 MotionEngine.start({ includePedometer?: boolean });
 MotionEngine.stop();
@@ -142,7 +142,7 @@ Native events: `motionActivity`, `motionSteps`, `autoPause`, `autoResume`
 ### 4.4 FitnessEngine (orchestrator)
 
 ```typescript
-import { createFitnessEngine } from '@micim/geo';
+import { createFitnessEngine } from 'react-native-fitness-geolocation';
 
 const engine = createFitnessEngine({
   autoPause: true,
@@ -189,7 +189,7 @@ await engine.syncPending();
 
 ## 6. SQLite schema
 
-Table: `locations` in `Documents/micim_geolocation.db`
+Table: `locations` in `Documents/fitness_geolocation.db`
 
 | Column | Type | Purpose |
 |--------|------|---------|
@@ -302,7 +302,7 @@ Warmup: first 3 good fixes accepted without sanity check.
 
 ### Add new native method
 1. Implement in `LocationEngine.swift` or `MotionEngine.swift`
-2. Expose in `MicimGeolocation.swift` + `MicimGeolocation.m` (RCT_EXTERN)
+2. Expose in `FitnessGeolocation.swift` + `FitnessGeolocation.m` (RCT_EXTERN)
 3. Wrap in `Geolocation.ts` or dedicated JS module
 4. Export from `index.ts`
 5. Update this doc + PRODUCTION.md
@@ -317,7 +317,7 @@ Warmup: first 3 good fixes accepted without sanity check.
 ### MFC-App import migration
 Only change:
 ```javascript
-import Geolocation from '@micim/geo';
+import Geolocation from 'react-native-fitness-geolocation';
 ```
 Do NOT add `startTracking()` or platform conditionals unless explicitly requested.
 
@@ -327,17 +327,17 @@ Do NOT add `startTracking()` or platform conditionals unless explicitly requeste
 
 ```bash
 # Package
-packages/micim-geo/
+packages/react-native-fitness-geolocation/
 
 # Autolinking requires podspec at package ROOT
-MicimGeolocation.podspec
+FitnessGeolocation.podspec
 
 # MFC-App install
-yarn add file:../packages/micim-geo
+yarn add file:../packages/react-native-fitness-geolocation
 cd ios && pod install
 
 # Verify
-node node_modules/@micim/geo/scripts/verify-setup.js
+node node_modules/react-native-fitness-geolocation/scripts/verify-setup.js
 ```
 
-Native module name for `NativeModules`: `MicimGeolocation`
+Native module name for `NativeModules`: `FitnessGeolocation`

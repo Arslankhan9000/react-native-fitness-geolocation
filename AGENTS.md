@@ -1,4 +1,4 @@
-# AI Agent Context — @micim/geo
+# AI Agent Context — react-native-fitness-geolocation
 
 > Read this first when working on the geo SDK or MFC-App activity tracking.
 
@@ -6,16 +6,16 @@
 
 | Field | Value |
 |-------|-------|
-| npm name | `@micim/geo` |
-| Path | `packages/micim-geo/` |
-| Native module | `MicimGeolocation` (internal, unchanged) |
+| npm name | `react-native-fitness-geolocation` |
+| Path | `packages/react-native-fitness-geolocation/` |
+| Native module | `FitnessGeolocation` |
 | Version | 2.0.0 |
 
 ## MFC-App toggle (minimal integration)
 
 ```javascript
 // MFC-App/src/config/geolocation.config.js
-export const USE_MICIM_GEO = false; // true = @micim/geo, false = legacy community geolocation
+export const USE_FITNESS_GEO = false; // true = react-native-fitness-geolocation, false = legacy community geolocation
 ```
 
 | File | Role |
@@ -25,7 +25,7 @@ export const USE_MICIM_GEO = false; // true = @micim/geo, false = legacy communi
 | `LocationTrackingService.js` | Uses `getTrackingGeolocation()` — unchanged logic |
 | `LocationService.js` | Uses `getPermissionGeolocation()` — unchanged logic |
 
-**Do not** import `@micim/geo` directly in app files — always go through `geolocationProvider.js`.
+**Do not** import `react-native-fitness-geolocation` directly in app files — always go through `geolocationProvider.js`.
 
 ## Docs
 
@@ -36,4 +36,4 @@ export const USE_MICIM_GEO = false; // true = @micim/geo, false = legacy communi
 
 ## Publish
 
-Standalone git repo in `packages/micim-geo/`. See [docs/PUBLISH.md](./docs/PUBLISH.md).
+Standalone git repo in `packages/react-native-fitness-geolocation/`. See [docs/PUBLISH.md](./docs/PUBLISH.md).

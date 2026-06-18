@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Verify platform setup for @micim/geo
- * Run from app root: node node_modules/@micim/geo/scripts/verify-setup.js
+ * Verify platform setup for react-native-fitness-geolocation
+ * Run from app root: npx react-native-fitness-geolocation verify-setup
  */
 
 const fs = require('fs');
@@ -16,12 +16,21 @@ function check(name, pass, fix) {
   else issues.push(`❌ ${name}\n   → ${fix}`);
 }
 
-// iOS Info.plist
-const plistPaths = [
-  path.join(appRoot, 'ios', 'myfitnesscoach', 'Info.plist'),
-  path.join(appRoot, 'ios', 'Info.plist'),
-];
-const plistPath = plistPaths.find(p => fs.existsSync(p));
+function findInfoPlist(dir, depth = 0) {
+  if (depth > 4) return null;
+  const direct = path.join(dir, 'Info.plist');
+  if (fs.existsSync(direct)) return direct;
+  if (!fs.existsSync(dir)) return null;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory() && entry.name !== 'Pods' && entry.name !== 'build') {
+      const found = findInfoPlist(path.join(dir, entry.name), depth + 1);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+const plistPath = findInfoPlist(path.join(appRoot, 'ios'));
 
 if (plistPath) {
   const plist = fs.readFileSync(plistPath, 'utf8');
@@ -34,32 +43,32 @@ if (plistPath) {
   check('iOS NSMotionUsageDescription (optional)', plist.includes('NSMotionUsageDescription'),
     'Add NSMotionUsageDescription for MotionEngine auto-pause');
 } else {
-  issues.push('❌ iOS Info.plist not found — skip if Android-only');
+  issues.push('⚠️  iOS Info.plist not found — skip if Android-only');
 }
 
-// Android Manifest
 const manifestPath = path.join(appRoot, 'android', 'app', 'src', 'main', 'AndroidManifest.xml');
 if (fs.existsSync(manifestPath)) {
   const manifest = fs.readFileSync(manifestPath, 'utf8');
   check('Android ACCESS_FINE_LOCATION', manifest.includes('ACCESS_FINE_LOCATION'),
     'Add ACCESS_FINE_LOCATION permission');
   check('Android ACCESS_BACKGROUND_LOCATION', manifest.includes('ACCESS_BACKGROUND_LOCATION'),
-    'Add ACCESS_BACKGROUND_LOCATION for background tracking');
+    'Add ACCESS_BACKGROUND_LOCATION for background tracking (API 29+)');
   check('Android FOREGROUND_SERVICE_LOCATION', manifest.includes('FOREGROUND_SERVICE_LOCATION'),
     'Add FOREGROUND_SERVICE_LOCATION for Android 14+');
-  check('Android ACTIVITY_RECOGNITION', manifest.includes('ACTIVITY_RECOGNITION'),
-    'Add ACTIVITY_RECOGNITION for MotionEngine');
+  check('Android ACTIVITY_RECOGNITION (optional)', manifest.includes('ACTIVITY_RECOGNITION'),
+    'Add ACTIVITY_RECOGNITION for MotionEngine auto-pause');
 } else {
-  issues.push('❌ AndroidManifest.xml not found — skip if iOS-only');
+  issues.push('⚠️  AndroidManifest.xml not found — skip if iOS-only');
 }
 
-console.log('\n@micim/geo — Setup Verification\n');
+console.log('\nreact-native-fitness-geolocation — Setup Verification\n');
 ok.forEach(l => console.log(l));
 issues.forEach(l => console.log(l));
 
-if (issues.length) {
+const failures = issues.filter(i => i.startsWith('❌'));
+if (failures.length) {
   console.log('\nSee docs/SETUP.md for copy-paste snippets.\n');
   process.exit(1);
 } else {
-  console.log('\nAll checks passed.\n');
+  console.log('\nAll required checks passed.\n');
 }

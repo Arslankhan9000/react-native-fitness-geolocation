@@ -11,7 +11,7 @@ import type {
   TrackingMode,
 } from './types';
 
-const Native = NativeModules.MicimGeolocation;
+const Native = NativeModules.FitnessGeolocation;
 
 /**
  * Heart of activity tracker apps — orchestrates permissions, GPS, motion, auto-pause.
