@@ -29,6 +29,7 @@ protocol LocationEngineDelegate: AnyObject {
   func locationEngine(_ engine: LocationEngine, didFailWithError error: Error, watchIds: [Int])
   func locationEngineDidChangeAuthorization(_ engine: LocationEngine)
   func locationEngineDidEnterForeground(_ engine: LocationEngine)
+  func locationEngine(_ engine: LocationEngine, didLog event: [String: Any])
 }
 
 final class LocationEngine: NSObject {
@@ -49,6 +50,10 @@ final class LocationEngine: NSObject {
   private var watchIds: [Int: Bool] = [:]
   private var nextWatchId = 1
   private var isPaused = false
+  private var hasCustomDistanceFilter = false
+  private var hasCustomDesiredAccuracy = false
+  private var pendingAuthorizationCompletion: ((String) -> Void)?
+  private var diagnostics: [[String: Any]] = []
 
   private let watchStateKey = "com.fitnessgeolocation.watchActive"
 
@@ -57,8 +62,8 @@ final class LocationEngine: NSObject {
     locationManager.delegate = self
     locationManager.pausesLocationUpdatesAutomatically = false
     locationManager.activityType = .fitness
-    locationManager.desiredAccuracy = kCLLocationAccuracyBest
-    locationManager.distanceFilter = 5
+    locationManager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
+    locationManager.distanceFilter = kCLDistanceFilterNone
     locationManager.showsBackgroundLocationIndicator = true
 
     NotificationCenter.default.addObserver(
@@ -71,6 +76,7 @@ final class LocationEngine: NSObject {
   deinit { NotificationCenter.default.removeObserver(self) }
 
   @objc private func appDidBecomeActive() {
+    log("foreground", ["pending": database.pendingCount()])
     delegate?.locationEngineDidEnterForeground(self)
   }
 
@@ -82,6 +88,7 @@ final class LocationEngine: NSObject {
 
   func setPaused(_ paused: Bool) {
     isPaused = paused
+    log(paused ? "pause" : "resume", ["mode": mode.rawValue])
     if paused {
       setMode(.stationary)
     } else {
@@ -90,25 +97,50 @@ final class LocationEngine: NSObject {
   }
 
   private func configureBackgroundUpdatesIfAllowed() {
-    if locationManager.authorizationStatus == .authorizedAlways {
+    if currentAuthorizationStatus() == .authorizedAlways {
       locationManager.allowsBackgroundLocationUpdates = true
+      log("background-updates-enabled")
     }
+  }
+
+  private func currentAuthorizationStatus() -> CLAuthorizationStatus {
+    if #available(iOS 14.0, *) {
+      return locationManager.authorizationStatus
+    }
+    return CLLocationManager.authorizationStatus()
   }
 
   // MARK: - Authorization
 
   func requestAuthorization(level: String, completion: @escaping (String) -> Void) {
+    log("request-authorization", ["level": level, "status": authorizationStatusString()])
+    let status = currentAuthorizationStatus()
+    if status == .denied || status == .restricted {
+      completion(authorizationStatusString())
+      return
+    }
+    if level == "always", status == .authorizedAlways {
+      completion(authorizationStatusString())
+      return
+    }
+    if level != "always", status == .authorizedAlways || status == .authorizedWhenInUse {
+      completion(authorizationStatusString())
+      return
+    }
+
+    pendingAuthorizationCompletion = completion
     switch level {
     case "always": locationManager.requestAlwaysAuthorization()
     default: locationManager.requestWhenInUseAuthorization()
     }
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-      completion(self.authorizationStatusString())
+    DispatchQueue.main.asyncAfter(deadline: .now() + 30.0) {
+      guard self.pendingAuthorizationCompletion != nil else { return }
+      self.finishAuthorizationRequest()
     }
   }
 
   func authorizationStatusString() -> String {
-    switch locationManager.authorizationStatus {
+    switch currentAuthorizationStatus() {
     case .authorizedAlways, .authorizedWhenInUse: return "granted"
     case .denied: return "denied"
     case .restricted: return "restricted"
@@ -118,7 +150,7 @@ final class LocationEngine: NSObject {
   }
 
   func hasAlwaysAuthorization() -> Bool {
-    locationManager.authorizationStatus == .authorizedAlways
+    currentAuthorizationStatus() == .authorizedAlways
   }
 
   // MARK: - Geolocation API
@@ -148,17 +180,20 @@ final class LocationEngine: NSObject {
     let id = nextWatchId
     nextWatchId += 1
     watchIds[id] = true
+    log("watch-add", ["watchId": id, "watchCount": watchIds.count])
     startWatchEngine()
     return id
   }
 
   func clearWatch(_ watchId: Int) {
     watchIds.removeValue(forKey: watchId)
+    log("watch-clear", ["watchId": watchId, "watchCount": watchIds.count])
     if watchIds.isEmpty { stopWatchEngine() }
   }
 
   func stopObserving() {
     watchIds.removeAll()
+    log("stop-observing")
     stopWatchEngine()
   }
 
@@ -175,11 +210,21 @@ final class LocationEngine: NSObject {
     database.getPendingForJs(limit: limit).map { $0.toDictionary() }
   }
 
-  func markDelivered(ids: [String]) -> Int { database.markDelivered(ids: ids) }
+  func markDelivered(ids: [String]) -> Int {
+    let count = database.markDelivered(ids: ids)
+    log("location-ack", ["requested": ids.count, "updated": count])
+    return count
+  }
   func acknowledge(ids: [String]) -> Int { database.acknowledge(ids: ids) }
-  func purgeDelivered() -> Int { database.purgeDelivered() }
+  func purgeDelivered() -> Int {
+    let count = database.purgeDelivered()
+    log("location-purge", ["deleted": count])
+    return count
+  }
   func pendingCount() -> Int { database.pendingCount() }
   func getQueueSize() -> Int { database.pendingCount() }
+
+  func getDiagnostics() -> [[String: Any]] { diagnostics }
 
   func getEngineState() -> [String: Any] {
     [
@@ -190,6 +235,7 @@ final class LocationEngine: NSObject {
       "motionState": motionState,
       "signalStrength": signalStrength(from: lastLocation),
       "backgroundSessionActive": backgroundSession.isActive,
+      "diagnosticCount": diagnostics.count,
     ]
   }
 
@@ -202,6 +248,12 @@ final class LocationEngine: NSObject {
     backgroundSession.start()
     persistWatchState()
     locationManager.startUpdatingLocation()
+    log("watch-start", [
+      "mode": mode.rawValue,
+      "distanceFilter": locationManager.distanceFilter,
+      "desiredAccuracy": locationManager.desiredAccuracy,
+      "always": hasAlwaysAuthorization(),
+    ])
   }
 
   private func stopWatchEngine() {
@@ -210,6 +262,7 @@ final class LocationEngine: NSObject {
     locationManager.stopUpdatingLocation()
     filter.reset()
     clearWatchState()
+    log("watch-stop", ["pending": database.pendingCount()])
   }
 
   private func restoreWatchIfNeeded() {
@@ -219,6 +272,7 @@ final class LocationEngine: NSObject {
     backgroundSession.start()
     locationManager.startUpdatingLocation()
     isWatching = true
+    log("watch-restore", ["mode": mode.rawValue])
   }
 
   private func persistWatchState() {
@@ -231,11 +285,20 @@ final class LocationEngine: NSObject {
   }
 
   private func applyWatchOptions(_ options: [String: Any]) {
+    hasCustomDistanceFilter = false
+    hasCustomDesiredAccuracy = false
+
     if let df = options["distanceFilter"] as? NSNumber {
       locationManager.distanceFilter = df.doubleValue
+      hasCustomDistanceFilter = true
     }
     if let high = options["enableHighAccuracy"] as? Bool {
-      locationManager.desiredAccuracy = high ? kCLLocationAccuracyBest : kCLLocationAccuracyHundredMeters
+      locationManager.desiredAccuracy = high ? kCLLocationAccuracyBestForNavigation : kCLLocationAccuracyHundredMeters
+      hasCustomDesiredAccuracy = true
+    }
+    if let desired = options["desiredAccuracy"] as? NSNumber {
+      locationManager.desiredAccuracy = desired.doubleValue
+      hasCustomDesiredAccuracy = true
     }
     if let pauses = options["pausesLocationUpdatesAutomatically"] as? Bool {
       locationManager.pausesLocationUpdatesAutomatically = pauses
@@ -257,8 +320,10 @@ final class LocationEngine: NSObject {
   }
 
   private func applyModeSettings() {
-    locationManager.desiredAccuracy = mode.desiredAccuracy
-    if locationManager.distanceFilter <= 0 || locationManager.distanceFilter > 100 {
+    if !hasCustomDesiredAccuracy {
+      locationManager.desiredAccuracy = mode.desiredAccuracy
+    }
+    if !hasCustomDistanceFilter {
       locationManager.distanceFilter = mode.distanceFilter
     }
   }
@@ -296,36 +361,68 @@ final class LocationEngine: NSObject {
   }
 
   private func processLocation(_ raw: CLLocation) {
-    if isPaused { return }
+    if isPaused {
+      log("location-drop", ["reason": "paused", "accuracy": raw.horizontalAccuracy])
+      return
+    }
 
     switch filter.process(raw) {
-    case .reject:
+    case .reject(let reason):
+      log("location-drop", ["reason": reason, "accuracy": raw.horizontalAccuracy])
       return
     case .accept(_, let smoothed):
       lastLocation = smoothed
       let canDeliverLive = isAppActive && !watchIds.isEmpty
-      let stored = makeStored(from: smoothed, delivered: canDeliverLive)
+      let stored = makeStored(from: smoothed, delivered: false)
 
-      guard database.insert(stored) else { return }
+      guard database.insert(stored) else {
+        log("persist-failed", ["accuracy": smoothed.horizontalAccuracy])
+        return
+      }
+
+      log("location-persist", [
+        "id": stored.id,
+        "accuracy": stored.accuracy,
+        "pending": database.pendingCount(),
+        "deliverLive": canDeliverLive,
+      ])
 
       if canDeliverLive {
-        database.markDelivered(ids: [stored.id])
         delegate?.locationEngine(self, didPersist: stored, watchIds: Array(watchIds.keys), deliverLive: true)
       }
     }
+  }
+
+  private func log(_ event: String, _ data: [String: Any] = [:]) {
+    var row = data
+    row["event"] = event
+    row["timestamp"] = Int64(Date().timeIntervalSince1970 * 1000)
+    row["platform"] = "ios"
+    diagnostics.append(row)
+    if diagnostics.count > 300 {
+      diagnostics.removeFirst(diagnostics.count - 300)
+    }
+    delegate?.locationEngine(self, didLog: row)
+  }
+
+  private func finishAuthorizationRequest() {
+    let completion = pendingAuthorizationCompletion
+    pendingAuthorizationCompletion = nil
+    completion?(authorizationStatusString())
   }
 }
 
 extension LocationEngine: CLLocationManagerDelegate {
   func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
     guard let location = locations.last else { return }
+    log("location-raw", ["count": locations.count, "accuracy": location.horizontalAccuracy])
 
     if let completion = pendingSingleFixCompletion {
       pendingSingleFixCompletion = nil
-      processLocation(location)
-      if let last = lastLocation {
-        completion(.success(makeStored(from: last, delivered: true)))
-      }
+      lastLocation = location
+      let stored = makeStored(from: location, delivered: true)
+      _ = database.insert(stored)
+      completion(.success(stored))
       return
     }
 
@@ -333,6 +430,7 @@ extension LocationEngine: CLLocationManagerDelegate {
   }
 
   func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+    log("location-error", ["message": error.localizedDescription])
     pendingSingleFixCompletion?(.failure(error))
     pendingSingleFixCompletion = nil
     delegate?.locationEngine(self, didFailWithError: error, watchIds: Array(watchIds.keys))
@@ -340,6 +438,8 @@ extension LocationEngine: CLLocationManagerDelegate {
 
   func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
     configureBackgroundUpdatesIfAllowed()
+    finishAuthorizationRequest()
+    log("authorization-change", ["status": authorizationStatusString()])
     delegate?.locationEngineDidChangeAuthorization(self)
   }
 }

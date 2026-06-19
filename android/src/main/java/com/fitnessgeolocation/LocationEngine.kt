@@ -61,19 +61,31 @@ enum class TrackingMode(val distanceM: Float, val priority: Int) {
   stationary(25f, Priority.PRIORITY_LOW_POWER),
 }
 
-class LocationEngine(
+class LocationEngine private constructor(
   private val context: Context,
-  private val listener: Listener,
 ) {
   interface Listener {
     fun onLocationPersisted(location: StoredLocation, watchIds: List<Int>, deliverLive: Boolean)
     fun onLocationError(message: String, watchIds: List<Int>)
     fun onEnterForeground()
+    fun onDiagnostic(event: WritableMap)
+  }
+
+  companion object {
+    @Volatile private var instance: LocationEngine? = null
+
+    fun getInstance(context: Context): LocationEngine {
+      return instance ?: synchronized(this) {
+        instance ?: LocationEngine(context.applicationContext).also { instance = it }
+      }
+    }
   }
 
   private val fusedClient = LocationServices.getFusedLocationProviderClient(context)
   private val database = LocationDatabase(context)
   private val filter = LocationFilter()
+  private val listeners = linkedSetOf<Listener>()
+  private val diagnostics = ArrayDeque<Map<String, Any?>>()
   private var callback: LocationCallback? = null
   private var isWatching = false
   private var isPaused = false
@@ -95,6 +107,18 @@ class LocationEngine(
     restoreWatchIfNeeded()
   }
 
+  fun addListener(listener: Listener) {
+    synchronized(listeners) { listeners.add(listener) }
+  }
+
+  fun removeListener(listener: Listener) {
+    synchronized(listeners) { listeners.remove(listener) }
+  }
+
+  private fun listenerSnapshot(): List<Listener> {
+    return synchronized(listeners) { listeners.toList() }
+  }
+
   private fun isAppActive(): Boolean {
     val app = context.applicationContext as? Application ?: return true
     val activityManager = app.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
@@ -108,17 +132,25 @@ class LocationEngine(
   }
 
   fun onHostResume() {
-    listener.onEnterForeground()
+    log("foreground", mapOf("pending" to database.pendingCount()))
+    listenerSnapshot().forEach { it.onEnterForeground() }
   }
 
   private fun applyOptions(options: ReadableMap?) {
     if (options == null) return
     if (options.hasKey("interval")) intervalMs = options.getDouble("interval").toLong().coerceAtLeast(500)
+    if (options.hasKey("locationUpdateInterval")) {
+      intervalMs = options.getDouble("locationUpdateInterval").toLong().coerceAtLeast(500)
+    }
     if (options.hasKey("fastestInterval")) {
       fastestIntervalMs = options.getDouble("fastestInterval").toLong().coerceAtLeast(500)
     }
+    if (options.hasKey("fastestLocationUpdateInterval")) {
+      fastestIntervalMs = options.getDouble("fastestLocationUpdateInterval").toLong().coerceAtLeast(500)
+    }
     if (options.hasKey("distanceFilter")) distanceMeters = options.getDouble("distanceFilter").toFloat()
     if (options.hasKey("enableHighAccuracy")) highAccuracy = options.getBoolean("enableHighAccuracy")
+    if (options.hasKey("desiredAccuracy")) highAccuracy = options.getDouble("desiredAccuracy") <= 25.0
     if (options.hasKey("trackingMode")) {
       mode = TrackingMode.entries.find { it.name == options.getString("trackingMode") } ?: mode
     }
@@ -172,7 +204,11 @@ class LocationEngine(
         onResult(Result.success(stored))
       }
     }
-    fusedClient.requestLocationUpdates(request, singleCallback, Looper.getMainLooper())
+    try {
+      fusedClient.requestLocationUpdates(request, singleCallback, Looper.getMainLooper())
+    } catch (e: SecurityException) {
+      onResult(Result.failure(e))
+    }
   }
 
   @SuppressLint("MissingPermission")
@@ -180,6 +216,7 @@ class LocationEngine(
     applyOptions(options)
     val id = nextWatchId++
     watchIds.add(id)
+    log("watch-add", mapOf("watchId" to id, "watchCount" to watchIds.size))
     startUpdates()
     prefs.edit()
       .putBoolean("watch_active", true)
@@ -193,11 +230,13 @@ class LocationEngine(
   fun setTrackingMode(modeStr: String) {
     mode = TrackingMode.entries.find { it.name == modeStr } ?: mode
     distanceMeters = mode.distanceM
+    log("mode-change", mapOf("mode" to mode.name, "distanceFilter" to distanceMeters))
     if (isWatching) restartUpdates()
   }
 
   fun setPaused(paused: Boolean) {
     isPaused = paused
+    log(if (paused) "pause" else "resume", mapOf("mode" to mode.name))
     if (paused) setTrackingMode("stationary") else setTrackingMode("fitness")
   }
 
@@ -213,25 +252,61 @@ class LocationEngine(
 
     callback = object : LocationCallback() {
       override fun onLocationResult(result: LocationResult) {
-        if (isPaused) return
+        if (isPaused) {
+          log("location-drop", mapOf("reason" to "paused"))
+          return
+        }
         val loc = result.lastLocation ?: return
+        log("location-raw", mapOf("count" to result.locations.size, "accuracy" to loc.accuracy))
         when (val filtered = filter.process(loc)) {
-          is LocationFilter.Result.Reject -> return
+          is LocationFilter.Result.Reject -> {
+            log("location-drop", mapOf("reason" to filtered.reason, "accuracy" to loc.accuracy))
+            return
+          }
           is LocationFilter.Result.Accept -> {
             lastLocation = filtered.location
             val deliverLive = isAppActive() && watchIds.isNotEmpty()
-            val stored = filtered.location.toStored(delivered = deliverLive)
+            val stored = filtered.location.toStored(delivered = false)
             if (!database.insert(stored)) {
-              listener.onLocationError("Failed to persist", watchIds.toList())
+              val ids = watchIds.toList()
+              log("persist-failed", mapOf("accuracy" to filtered.location.accuracy))
+              listenerSnapshot().forEach { it.onLocationError("Failed to persist", ids) }
               return
             }
-            if (deliverLive) database.markDelivered(listOf(stored.id))
-            listener.onLocationPersisted(stored, watchIds.toList(), deliverLive)
+            log(
+              "location-persist",
+              mapOf(
+                "id" to stored.id,
+                "accuracy" to stored.accuracy,
+                "pending" to database.pendingCount(),
+                "deliverLive" to deliverLive,
+              ),
+            )
+            val ids = watchIds.toList()
+            listenerSnapshot().forEach { it.onLocationPersisted(stored, ids, deliverLive) }
           }
         }
       }
     }
-    fusedClient.requestLocationUpdates(request, callback!!, Looper.getMainLooper())
+    try {
+      fusedClient.requestLocationUpdates(request, callback!!, Looper.getMainLooper())
+      log(
+        "watch-start",
+        mapOf(
+          "mode" to mode.name,
+          "distanceFilter" to distanceMeters,
+          "interval" to intervalMs,
+          "fastestInterval" to fastestIntervalMs,
+          "highAccuracy" to highAccuracy,
+        ),
+      )
+    } catch (e: SecurityException) {
+      val ids = watchIds.toList()
+      log("location-error", mapOf("message" to "Location permission not granted"))
+      listenerSnapshot().forEach { it.onLocationError("Location permission not granted", ids) }
+      callback = null
+      isWatching = false
+    }
   }
 
   private fun restartUpdates() {
@@ -241,11 +316,15 @@ class LocationEngine(
 
   fun clearWatch(watchId: Int) {
     watchIds.remove(watchId)
+    log("watch-clear", mapOf("watchId" to watchId, "watchCount" to watchIds.size))
     if (watchIds.isEmpty()) stopUpdates()
   }
 
+  fun activeWatchCount(): Int = watchIds.size
+
   fun stopObserving() {
     watchIds.clear()
+    log("stop-observing")
     stopUpdates()
   }
 
@@ -261,6 +340,7 @@ class LocationEngine(
     if (!keepWatchState) {
       prefs.edit().putBoolean("watch_active", false).apply()
     }
+    log("watch-stop", mapOf("pending" to database.pendingCount()))
   }
 
   @SuppressLint("MissingPermission")
@@ -270,6 +350,7 @@ class LocationEngine(
     intervalMs = prefs.getLong("watch_interval", 3000L)
     distanceMeters = prefs.getFloat("watch_distance", 5f)
     isWatching = true
+    log("watch-restore", mapOf("mode" to mode.name, "distanceFilter" to distanceMeters))
     startUpdates()
   }
 
@@ -281,6 +362,7 @@ class LocationEngine(
     map.putInt("pendingQueue", database.pendingCount())
     map.putString("motionState", "unknown")
     map.putString("signalStrength", signalStrength(lastLocation))
+    map.putInt("diagnosticCount", diagnostics.size)
     return map
   }
 
@@ -299,10 +381,38 @@ class LocationEngine(
     return arr
   }
 
-  fun markDelivered(ids: List<String>): Int = database.markDelivered(ids)
+  fun markDelivered(ids: List<String>): Int {
+    val count = database.markDelivered(ids)
+    log("location-ack", mapOf("requested" to ids.size, "updated" to count))
+    return count
+  }
   fun acknowledge(ids: List<String>): Int = database.acknowledge(ids)
-  fun purgeDelivered(): Int = database.purgeDelivered()
+  fun purgeDelivered(): Int {
+    val count = database.purgeDelivered()
+    log("location-purge", mapOf("deleted" to count))
+    return count
+  }
   fun pendingCount(): Int = database.pendingCount()
+
+  fun getDiagnostics(): WritableArray {
+    val arr = Arguments.createArray()
+    synchronized(diagnostics) {
+      diagnostics.forEach { arr.pushMap(Arguments.makeNativeMap(it)) }
+    }
+    return arr
+  }
+
+  private fun log(event: String, data: Map<String, Any?> = emptyMap()) {
+    val row = data.toMutableMap()
+    row["event"] = event
+    row["platform"] = "android"
+    row["timestamp"] = System.currentTimeMillis().toDouble()
+    synchronized(diagnostics) {
+      diagnostics.addLast(row)
+      while (diagnostics.size > 300) diagnostics.removeFirst()
+    }
+    listenerSnapshot().forEach { it.onDiagnostic(Arguments.makeNativeMap(row)) }
+  }
 
   private fun android.location.Location.toStored(delivered: Boolean): StoredLocation {
     val acc = if (hasAccuracy()) accuracy else 999f

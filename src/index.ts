@@ -6,6 +6,7 @@
  */
 
 export { default, Geolocation } from './Geolocation';
+export { Geolocation as BackgroundGeolocation } from './Geolocation';
 export { PermissionManager } from './PermissionManager';
 export { MotionEngine } from './MotionEngine';
 export { FitnessEngine, createFitnessEngine } from './FitnessEngine';

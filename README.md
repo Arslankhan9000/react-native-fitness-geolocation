@@ -15,6 +15,7 @@ cd ios && pod install
 |---------|-----|---------|
 | `getCurrentPosition` / `watchPosition` | ✅ | ✅ |
 | Background GPS + SQLite queue | ✅ | ✅ |
+| Built-in foreground tracking service | — | ✅ |
 | Foreground queue replay | ✅ | ✅ |
 | Watch restore after app restart | ✅ | ✅ |
 | `distanceFilter`, `interval`, `maximumAge` | ✅ | ✅ |
@@ -85,6 +86,54 @@ const count = await Geolocation.syncPendingLocations();
 console.log(`Delivered ${count} queued points`);
 ```
 
+### Production lifecycle API
+
+For workout recording, use the native-first lifecycle API. This gives the app a clear state machine: configure, subscribe, start native recording, sync the native SQLite queue, then stop.
+
+```javascript
+import { BackgroundGeolocation } from 'react-native-fitness-geolocation';
+
+const sub = BackgroundGeolocation.onLocation(
+  async location => {
+    await saveCoordinateToRealm(location);
+  },
+  error => console.warn(error),
+);
+
+await BackgroundGeolocation.ready({
+  authorizationLevel: 'always',
+  enableHighAccuracy: true,
+  desiredAccuracy: 10,
+  distanceFilter: 0,
+  locationUpdateInterval: 1000,
+  fastestLocationUpdateInterval: 1000,
+  trackingMode: 'fitness',
+  pausesLocationUpdatesAutomatically: false,
+  showsBackgroundLocationIndicator: true,
+  notificationTitle: 'Activity tracking active',
+  notificationText: 'Recording your route in the background',
+});
+
+await BackgroundGeolocation.start();
+
+// End workout
+await BackgroundGeolocation.sync();
+await BackgroundGeolocation.stop();
+sub.remove();
+```
+
+For device testing, subscribe to native diagnostics:
+
+```javascript
+const diagnosticSub = BackgroundGeolocation.onDiagnostic(event => {
+  console.log('[FitnessGeo]', event.event, event);
+});
+
+const history = await BackgroundGeolocation.getDiagnostics();
+```
+
+Useful events include `location-raw`, `location-drop`, `location-persist`, `persist-failed`, `watch-start`, `watch-stop`, `watch-restore`, `foreground`, and `authorization-change`.
+
 **Required setup:** See [docs/SETUP.md](./docs/SETUP.md) for Info.plist and AndroidManifest snippets.
 
 Verify your app:
@@ -150,9 +199,13 @@ See [docs/MIGRATION.md](./docs/MIGRATION.md) for options matrix and edge cases.
 | `timeout` | 15000 | ms, emits error code `3` |
 | `maximumAge` | 0 | Accept cached fix if younger (ms) |
 | `enableHighAccuracy` | true | |
+| `desiredAccuracy` | — | native accuracy target in meters |
 | `distanceFilter` | 5 | meters |
-| `interval` | 3000 | Android update interval (ms) |
+| `distanceFilter: 0` | — | densest route recording; useful for Strava-style workouts |
+| `interval` | 3000 | Android update interval (ms); iOS is distance/accuracy driven |
+| `locationUpdateInterval` | — | alias for background-geolocation style Android configs |
 | `fastestInterval` | 1000 | Android min interval (ms) |
+| `fastestLocationUpdateInterval` | — | alias for background-geolocation style Android configs |
 | `trackingMode` | — | `fitness` \| `navigation` \| `balanced` \| `low_power` |
 | `enableMotion` | false | Opt-in motion engine with watch |
 
@@ -166,7 +219,9 @@ See [docs/MIGRATION.md](./docs/MIGRATION.md) for options matrix and edge cases.
 
 ## Android background note
 
-For long sessions with the screen off, Android may require a **foreground service** with a persistent notification (OS policy). This package persists GPS natively; pair with a foreground service library for best results on Android 12+. See [docs/SETUP.md](./docs/SETUP.md).
+For long sessions with the screen off, Android requires a **foreground service** with a persistent notification. This package now ships its own location foreground service, native GPS pipeline, and SQLite queue, so activity tracking does not depend on `react-native-background-geolocation` release builds.
+
+For smooth workout polylines, prefer `enableHighAccuracy: true`, `distanceFilter: 0` to `5`, `trackingMode: 'fitness'`, and `pausesLocationUpdatesAutomatically: false`. iOS does not guarantee exact 1-second background callbacks; the package records every accepted native fix and replays missed JS callbacks from SQLite.
 
 ## Docs
 

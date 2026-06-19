@@ -30,6 +30,7 @@ Structured reference for AI coding assistants. Last updated: June 2026.
 │                      NATIVE LAYER (iOS/Android)                   │
 │                                                                   │
 │  CLLocationManager / FusedLocationProvider                        │
+│  Android FitnessLocationService keeps GPS foreground-eligible      │
 │       ↓                                                           │
 │  LocationFilter (accuracy ≤50m, spike ≤150m/s, smooth)           │
 │       ↓                                                           │
@@ -54,18 +55,18 @@ Structured reference for AI coding assistants. Last updated: June 2026.
 ### 3.1 Foreground tracking (normal)
 
 1. App calls `Geolocation.watchPosition(callback, error, options)`
-2. Native starts `CLLocationManager.startUpdatingLocation()`
-3. Native starts `MotionEngine` automatically
+2. Native starts `CLLocationManager.startUpdatingLocation()` / FusedLocationProvider
+3. Android starts `FitnessLocationService`; native starts `MotionEngine` where available
 4. GPS fix → `LocationFilter.process()` → SQLite insert → emit `watchPosition` event
 5. JS callback runs → MFC-App `saveCoordinate()` → Realm
 
 ### 3.2 Background tracking (screen locked)
 
-1. iOS suspends JS thread
-2. Native continues receiving CLLocation updates
+1. iOS / Android may suspend the JS thread
+2. Native continues receiving CLLocation / foreground-service FusedLocation updates
 3. Each fix → filter → SQLite insert with `delivered_to_js = 0`
 4. No JS callback (JS may be frozen)
-5. `CLBackgroundActivitySession` (iOS 17+) + `allowsBackgroundLocationUpdates` keep pipeline alive
+5. `CLBackgroundActivitySession` (iOS 17+) and Android foreground service keep the native pipeline alive
 
 ### 3.3 Foreground return (sync)
 
@@ -94,8 +95,8 @@ import Geolocation from 'react-native-fitness-geolocation';
 
 Geolocation.getCurrentPosition(success, error?, options?);
 Geolocation.watchPosition(success, error?, options?): number;  // watchId
-Geolocation.clearWatch(watchId);
-Geolocation.stopObserving();
+Geolocation.clearWatch(watchId);  // drains pending native rows before teardown
+Geolocation.stopObserving();      // drains pending native rows before teardown
 Geolocation.requestAuthorization('whenInUse' | 'always'): Promise<string>;
 Geolocation.requestAuthorization(success, error);  // community callback style
 Geolocation.getAuthorizationStatus(): Promise<{ status, always }>;
@@ -107,6 +108,33 @@ Geolocation.getQueueSize(): Promise<number>;
 Geolocation.setTrackingMode(mode): Promise<void>;
 Geolocation.setActivityPaused(paused): Promise<void>;
 Geolocation.getEngineState(): Promise<object>;
+```
+
+### 4.1b BackgroundGeolocation-style lifecycle
+
+This is a clean-room API shape inspired by mature background-location SDK public contracts. Do not copy closed native implementation. The core rule is: native records, SQLite persists, JS subscribes, JS acks after app storage succeeds.
+
+```typescript
+import { BackgroundGeolocation } from 'react-native-fitness-geolocation';
+
+BackgroundGeolocation.onLocation(async location => {
+  await saveCoordinate(location);
+});
+
+await BackgroundGeolocation.ready({
+  authorizationLevel: 'always',
+  enableHighAccuracy: true,
+  desiredAccuracy: 10,
+  distanceFilter: 0,
+  locationUpdateInterval: 1000,
+  fastestLocationUpdateInterval: 1000,
+  trackingMode: 'fitness',
+  pausesLocationUpdatesAutomatically: false,
+});
+
+await BackgroundGeolocation.start();
+await BackgroundGeolocation.sync();
+await BackgroundGeolocation.stop();
 ```
 
 ### 4.2 PermissionManager
@@ -163,7 +191,7 @@ await engine.syncPending();
 ```typescript
 {
   enableHighAccuracy?: boolean;
-  distanceFilter?: number;
+  distanceFilter?: number; // 0 = densest native route; iOS still not timer-guaranteed
   activityType?: 'fitness' | 'automotiveNavigation' | 'otherNavigation' | 'other';
   pausesLocationUpdatesAutomatically?: boolean;  // default false in native
   showsBackgroundLocationIndicator?: boolean;
@@ -238,7 +266,7 @@ Requires app Info.plist (documented in SETUP.md):
 | `MFC-App/src/screens/track_physical_activities/StartActivityScreen.js` | Pre-activity permission flow |
 
 MFC-App also uses:
-- `react-native-background-actions` — foreground notification, step counter loop (NOT replaced by this package)
+- `react-native-background-actions` — app-specific notification text and step counter loop (GPS foreground service is built in)
 - `realm` — app session + LocationPoint storage (NOT replaced; native SQLite is GPS buffer only)
 
 ---
@@ -252,7 +280,8 @@ MFC-App also uses:
 | Foreground → Realm replay | ✅ (via callbacks) | saveCoordinate |
 | Realm session/points | — | ✅ |
 | Map / polyline UI | — | ✅ |
-| Foreground notification | — | ✅ background-actions |
+| GPS foreground service | ✅ | — |
+| Custom notification text | basic default | ✅ background-actions |
 | Step counting | MotionEngine optional | ✅ stepCounterHelper |
 | HealthKit sync | — | ✅ react-native-health |
 | Server upload | — | ✅ app API |

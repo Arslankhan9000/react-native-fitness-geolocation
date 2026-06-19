@@ -75,7 +75,11 @@ setup_permissions([
 
 ---
 
-## Android — Required (you add once)
+## Android — Required
+
+The package contributes its own manifest entries for location, foreground-service, notification, activity-recognition permissions, and the native tracking service. In most bare React Native apps, Gradle manifest merging handles this automatically.
+
+Keep these entries in your app manifest if you prefer explicit app-level declarations or your permission review process requires them:
 
 ### AndroidManifest.xml
 
@@ -95,21 +99,10 @@ setup_permissions([
 <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
 ```
 
-### Foreground service (keep existing background-actions)
+### Foreground service
 
-The SDK handles GPS natively. Your app should keep `react-native-background-actions` for:
-- Persistent notification during workout
-- Step counter JS callbacks
-- Notification text updates
-
-Example service declaration (you likely already have this):
-
-```xml
-<service
-  android:name="com.asterinet.react.bgactions.RNBackgroundActionsTask"
-  android:foregroundServiceType="location|dataSync"
-  android:exported="false" />
-```
+The SDK handles GPS natively with `com.fitnessgeolocation.FitnessLocationService`.
+You can still keep `react-native-background-actions` for app-specific work such as step-counter JS callbacks or custom notification text, but it is no longer required to keep the GPS engine alive.
 
 ### Runtime permission order (Android 11+)
 
@@ -148,7 +141,7 @@ Your project already has:
 - ✅ `NSMotionUsageDescription`
 - ✅ Android `ACCESS_BACKGROUND_LOCATION`
 - ✅ Android `FOREGROUND_SERVICE_LOCATION`
-- ✅ `react-native-background-actions` for notifications
+- ✅ `react-native-background-actions` for app-specific notification text / step loop
 
 No additional manifest/plist changes needed for MFC-App.
 

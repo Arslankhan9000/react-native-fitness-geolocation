@@ -1,10 +1,14 @@
-import { AppState, NativeEventEmitter, NativeModules } from 'react-native';
+import { AppState, NativeEventEmitter, NativeModules, Platform } from 'react-native';
 import { getConfiguration, setConfiguration, shouldSkipPermissionRequests } from './config';
 import type {
+  BackgroundGeolocationConfig,
+  BackgroundGeolocationState,
   GeolocationConfiguration,
+  GeolocationDiagnosticEvent,
   GeolocationError,
   GeolocationOptions,
   GeolocationResponse,
+  LocationSubscription,
 } from './types';
 import { PositionError } from './types';
 
@@ -20,7 +24,7 @@ const Native = NativeModules.FitnessGeolocation
 
 const emitter = new NativeEventEmitter(Native);
 
-type SuccessCallback = (position: GeolocationResponse) => void;
+type SuccessCallback = (position: GeolocationResponse) => void | Promise<void>;
 type ErrorCallback = (error: GeolocationError) => void;
 
 interface WatchEntry {
@@ -30,12 +34,22 @@ interface WatchEntry {
 }
 
 const watchRegistry = new Map<number, WatchEntry>();
+const inFlightNativeIds = new Set<string>();
 let watchSubscription: { remove: () => void } | null = null;
 let foregroundSubscription: { remove: () => void } | null = null;
 let authSubscription: { remove: () => void } | null = null;
+let diagnosticSubscription: { remove: () => void } | null = null;
 let appStateSubscription: { remove: () => void } | null = null;
 let isDraining = false;
 let motionWatchCount = 0;
+let backgroundConfig: BackgroundGeolocationConfig = {};
+let backgroundWatchId: number | null = null;
+let backgroundConfigured = false;
+
+const locationListeners = new Set<SuccessCallback>();
+const locationErrorListeners = new Set<ErrorCallback>();
+const diagnosticListeners = new Set<(event: GeolocationDiagnosticEvent) => void>();
+const jsDiagnostics: GeolocationDiagnosticEvent[] = [];
 
 const DRAIN_BATCH = 100;
 const DEFAULT_TIMEOUT_MS = 15000;
@@ -48,6 +62,25 @@ function positionError(code: number, message: string): GeolocationError {
     POSITION_UNAVAILABLE: PositionError.POSITION_UNAVAILABLE,
     TIMEOUT: PositionError.TIMEOUT,
   };
+}
+
+function reportJsDiagnostic(event: string, data: Record<string, unknown> = {}): void {
+  const row: GeolocationDiagnosticEvent = {
+    event,
+    platform: Platform.OS === 'android' ? 'android' : 'ios',
+    timestamp: Date.now(),
+    layer: 'js',
+    ...data,
+  };
+  jsDiagnostics.push(row);
+  if (jsDiagnostics.length > 300) {
+    jsDiagnostics.splice(0, jsDiagnostics.length - 300);
+  }
+  for (const listener of diagnosticListeners) {
+    try {
+      listener(row);
+    } catch {}
+  }
 }
 
 function payloadToPosition(payload: Record<string, unknown>): GeolocationResponse {
@@ -77,6 +110,7 @@ async function drainNativeQueueToWatches(): Promise<number> {
 
   isDraining = true;
   let totalReplayed = 0;
+  reportJsDiagnostic('queue-drain-start', { watchCount: watchRegistry.size });
 
   try {
     let batch: Array<Record<string, unknown>>;
@@ -89,27 +123,39 @@ async function drainNativeQueueToWatches(): Promise<number> {
       for (const payload of batch) {
         const position = payloadToPosition(payload);
         const nativeId = String(payload.id ?? '');
+        if (nativeId && inFlightNativeIds.has(nativeId)) continue;
+        let deliveredToAll = true;
 
         for (const entry of watchRegistry.values()) {
           try {
-            entry.success(position);
+            await entry.success(position);
           } catch (e) {
+            deliveredToAll = false;
+            reportJsDiagnostic('callback-failed', {
+              nativeId,
+              message: e instanceof Error ? e.message : String(e),
+            });
             console.warn('[FitnessGeolocation] watch callback error:', e);
           }
         }
 
-        if (nativeId) deliveredIds.push(nativeId);
+        if (nativeId && deliveredToAll) deliveredIds.push(nativeId);
         totalReplayed++;
       }
 
       if (deliveredIds.length) {
         await Native.markDelivered(deliveredIds);
+        reportJsDiagnostic('queue-ack', { count: deliveredIds.length });
       }
     } while (batch.length === DRAIN_BATCH);
   } catch (e) {
+    reportJsDiagnostic('queue-drain-failed', {
+      message: e instanceof Error ? e.message : String(e),
+    });
     console.warn('[FitnessGeolocation] queue drain failed:', e);
   } finally {
     isDraining = false;
+    reportJsDiagnostic('queue-drain-end', { replayed: totalReplayed });
   }
 
   if (__DEV__ && totalReplayed > 0) {
@@ -135,10 +181,30 @@ function ensureBridgeListeners() {
         if (event.error) {
           entry.error(positionError(event.error.code, event.error.message));
         } else if (event.position) {
-          entry.success(payloadToPosition(event.position as unknown as Record<string, unknown>));
-          if (event.nativeId) {
-            Native.markDelivered([event.nativeId]).catch(() => {});
-          }
+          if (event.nativeId) inFlightNativeIds.add(event.nativeId);
+          Promise.resolve(entry.success(payloadToPosition(event.position as unknown as Record<string, unknown>)))
+            .then(() => {
+              if (event.nativeId) {
+                Native.markDelivered([event.nativeId])
+                  .then(() => reportJsDiagnostic('live-ack', { nativeId: event.nativeId }))
+                  .catch((e: unknown) => {
+                    reportJsDiagnostic('live-ack-failed', {
+                      nativeId: event.nativeId,
+                      message: e instanceof Error ? e.message : String(e),
+                    });
+                  });
+              }
+            })
+            .catch(e => {
+              reportJsDiagnostic('callback-failed', {
+                nativeId: event.nativeId,
+                message: e instanceof Error ? e.message : String(e),
+              });
+              console.warn('[FitnessGeolocation] watch callback error:', e);
+            })
+            .finally(() => {
+              if (event.nativeId) inFlightNativeIds.delete(event.nativeId);
+            });
         }
       },
     );
@@ -156,6 +222,19 @@ function ensureBridgeListeners() {
         drainNativeQueueToWatches();
       }
     });
+  }
+
+  if (!diagnosticSubscription) {
+    diagnosticSubscription = emitter.addListener(
+      'diagnostic',
+      (event: GeolocationDiagnosticEvent) => {
+        for (const listener of diagnosticListeners) {
+          try {
+            listener(event);
+          } catch {}
+        }
+      },
+    );
   }
 
   if (!appStateSubscription) {
@@ -189,7 +268,133 @@ function stopMotionIfNeeded(): void {
   Native.stopMotionTracking?.().catch(() => {});
 }
 
+async function notifyBackgroundLocation(position: GeolocationResponse): Promise<void> {
+  if (locationListeners.size === 0) {
+    throw new Error('No BackgroundGeolocation.onLocation subscriber');
+  }
+  for (const listener of locationListeners) {
+    await listener(position);
+  }
+}
+
+function notifyBackgroundError(error: GeolocationError): void {
+  for (const listener of locationErrorListeners) {
+    try {
+      listener(error);
+    } catch (e) {
+      console.warn('[FitnessGeolocation] onLocation error callback failed:', e);
+    }
+  }
+}
+
+async function getBackgroundState(): Promise<BackgroundGeolocationState> {
+  const [engine, auth] = await Promise.all([
+    Native.getEngineState(),
+    Native.getAuthorizationStatus(),
+  ]);
+
+  return {
+    ...(engine as Record<string, unknown>),
+    enabled: backgroundWatchId != null || Boolean((engine as { isWatching?: boolean }).isWatching),
+    configured: backgroundConfigured,
+    authorization: auth.status,
+    always: auth.always,
+  } as BackgroundGeolocationState;
+}
+
 export const Geolocation = {
+  async ready(config: BackgroundGeolocationConfig = {}): Promise<BackgroundGeolocationState> {
+    backgroundConfig = {
+      enableHighAccuracy: true,
+      distanceFilter: 0,
+      pausesLocationUpdatesAutomatically: false,
+      showsBackgroundLocationIndicator: true,
+      trackingMode: 'fitness',
+      authorizationLevel: 'always',
+      stopOnTerminate: false,
+      ...backgroundConfig,
+      ...config,
+    };
+    backgroundConfigured = true;
+
+    this.setRNConfiguration(backgroundConfig);
+    await Native.setConfiguration?.(backgroundConfig).catch(() => {});
+
+    if (backgroundConfig.startOnReady) {
+      await this.start();
+    }
+
+    return getBackgroundState();
+  },
+
+  async start(options: GeolocationOptions = {}): Promise<BackgroundGeolocationState> {
+    ensureBridgeListeners();
+    if (!backgroundConfigured) {
+      await this.ready();
+    }
+
+    if (backgroundWatchId == null) {
+      backgroundWatchId = this.watchPosition(
+        position => notifyBackgroundLocation(position),
+        error => notifyBackgroundError(error),
+        { ...backgroundConfig, ...options },
+      );
+    }
+
+    return getBackgroundState();
+  },
+
+  async stop(): Promise<BackgroundGeolocationState> {
+    if (backgroundWatchId != null) {
+      this.clearWatch(backgroundWatchId);
+      backgroundWatchId = null;
+    }
+    await this.syncPendingLocations();
+    return getBackgroundState();
+  },
+
+  onLocation(success: SuccessCallback, error?: ErrorCallback): LocationSubscription {
+    locationListeners.add(success);
+    if (error) locationErrorListeners.add(error);
+    return {
+      remove: () => {
+        locationListeners.delete(success);
+        if (error) locationErrorListeners.delete(error);
+      },
+    };
+  },
+
+  onHeartbeat(callback: (state: BackgroundGeolocationState) => void | Promise<void>): LocationSubscription {
+    ensureBridgeListeners();
+    const sub = emitter.addListener('foregroundSync', async () => {
+      await callback(await getBackgroundState());
+    });
+    return { remove: () => sub.remove() };
+  },
+
+  async changePace(isMoving: boolean): Promise<void> {
+    await Native.setActivityPaused(!isMoving);
+  },
+
+  sync(): Promise<number> {
+    return drainNativeQueueToWatches();
+  },
+
+  getState(): Promise<BackgroundGeolocationState> {
+    return getBackgroundState();
+  },
+
+  onDiagnostic(callback: (event: GeolocationDiagnosticEvent) => void): LocationSubscription {
+    ensureBridgeListeners();
+    diagnosticListeners.add(callback);
+    return { remove: () => diagnosticListeners.delete(callback) };
+  },
+
+  async getDiagnostics(): Promise<GeolocationDiagnosticEvent[]> {
+    const nativeRows: GeolocationDiagnosticEvent[] = await Native.getDiagnostics();
+    return [...nativeRows, ...jsDiagnostics].sort((a, b) => a.timestamp - b.timestamp);
+  },
+
   getCurrentPosition(
     success: SuccessCallback,
     error?: ErrorCallback,
@@ -239,23 +444,34 @@ export const Geolocation = {
 
   clearWatch(watchId: number): void {
     const entry = watchRegistry.get(watchId);
-    watchRegistry.delete(watchId);
-    Native.clearWatch(watchId);
-    if (entry?.motion) {
-      motionWatchCount = Math.max(0, motionWatchCount - 1);
-      if (motionWatchCount === 0) stopMotionIfNeeded();
+    const finishClear = () => {
+      watchRegistry.delete(watchId);
+      Native.clearWatch(watchId);
+      if (entry?.motion) {
+        motionWatchCount = Math.max(0, motionWatchCount - 1);
+        if (motionWatchCount === 0) stopMotionIfNeeded();
+      }
+      if (watchRegistry.size === 0) {
+        Native.purgeDelivered?.().catch(() => {});
+      }
+    };
+
+    if (!entry) {
+      finishClear();
+      return;
     }
-    if (watchRegistry.size === 0) {
-      Native.purgeDelivered?.().catch(() => {});
-    }
+
+    drainNativeQueueToWatches().finally(finishClear);
   },
 
   stopObserving(): void {
-    watchRegistry.clear();
-    Native.stopLocationObserving();
-    motionWatchCount = 0;
-    Native.stopMotionTracking?.().catch(() => {});
-    Native.purgeDelivered?.().catch(() => {});
+    drainNativeQueueToWatches().finally(() => {
+      watchRegistry.clear();
+      Native.stopLocationObserving();
+      motionWatchCount = 0;
+      Native.stopMotionTracking?.().catch(() => {});
+      Native.purgeDelivered?.().catch(() => {});
+    });
   },
 
   requestAuthorization(

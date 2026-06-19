@@ -16,7 +16,7 @@ How top fitness apps solve GPS activity tracking, and what **react-native-fitnes
 | GPS filtering / smoothing | ✅ Map match | ✅ | ✅ Kalman fusion | ✅ | ✅ **Native filter engine** |
 | Steps during activity | HealthKit | HealthKit | Watch IMU | IMU | ⚡ **CMPedometer optional** |
 | HealthKit / Health Connect sync | ✅ | ✅ | ✅ | ✅ | 📄 **App integrates** |
-| Foreground service (Android) | ✅ | ✅ | ✅ | ✅ | 📄 **App + background-actions** |
+| Foreground service (Android) | ✅ | ✅ | ✅ | ✅ | ✅ **Built-in** |
 | Barometer elevation | ❌ phone | ❌ | ✅ ABC | ✅ | 📄 **Future / HealthKit** |
 | Map matching (roads) | ✅ | ✅ | ✅ | ❌ | 📄 **App / Mapbox layer** |
 | Privacy zones (hide start/end) | ✅ | ❌ | ❌ | ❌ | 📄 **App layer** |
@@ -115,7 +115,7 @@ CLLocationManager
 ```
 FusedLocationProviderClient
   PRIORITY_HIGH_ACCURACY while recording
-  Foreground Service type=location           ← app manifest + background-actions
+  Foreground Service type=location           ← implemented
   ActivityRecognitionClient                  ← implemented
   WorkManager restart watchdog               ← documented for app
 ```
@@ -152,7 +152,7 @@ Raw GPS fix
 - UI, maps, polylines
 - Realm / server sync
 - HealthKit / Health Connect write
-- Foreground notification text (background-actions)
+- Custom foreground notification text
 - Activity type picker, social, sharing
 - Map matching API calls
 - Privacy zones

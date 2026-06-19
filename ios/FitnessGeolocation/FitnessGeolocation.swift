@@ -17,7 +17,7 @@ class FitnessGeolocation: RCTEventEmitter, LocationEngineDelegate, MotionEngineD
 
   override func supportedEvents() -> [String]! {
     ["watchPosition", "authorizationChange", "foregroundSync",
-     "motionActivity", "motionSteps", "autoPause", "autoResume"]
+     "motionActivity", "motionSteps", "autoPause", "autoResume", "diagnostic"]
   }
 
   override func startObserving() { hasListeners = true }
@@ -72,6 +72,12 @@ class FitnessGeolocation: RCTEventEmitter, LocationEngineDelegate, MotionEngineD
     resolve(engine.getQueueSize())
   }
 
+  @objc(getDiagnostics:rejecter:)
+  func getDiagnostics(_ resolve: @escaping RCTPromiseResolveBlock,
+                      rejecter reject: @escaping RCTPromiseRejectBlock) {
+    resolve(engine.getDiagnostics())
+  }
+
   @objc(requestAuthorization:resolver:rejecter:)
   func requestAuthorization(_ level: String, resolver resolve: @escaping RCTPromiseResolveBlock,
                             rejecter reject: @escaping RCTPromiseRejectBlock) {
@@ -82,6 +88,16 @@ class FitnessGeolocation: RCTEventEmitter, LocationEngineDelegate, MotionEngineD
   func getAuthorizationStatus(_ resolve: @escaping RCTPromiseResolveBlock,
                               rejecter reject: @escaping RCTPromiseRejectBlock) {
     resolve(["status": engine.authorizationStatusString(), "always": engine.hasAlwaysAuthorization()])
+  }
+
+  @objc(setConfiguration:resolver:rejecter:)
+  func setConfiguration(_ config: NSDictionary,
+                        resolver resolve: @escaping RCTPromiseResolveBlock,
+                        rejecter reject: @escaping RCTPromiseRejectBlock) {
+    if let mode = config["trackingMode"] as? String {
+      engine.setModeString(mode)
+    }
+    resolve(nil)
   }
 
   // MARK: - Fitness / Motion API
@@ -161,6 +177,11 @@ class FitnessGeolocation: RCTEventEmitter, LocationEngineDelegate, MotionEngineD
   func locationEngineDidEnterForeground(_ engine: LocationEngine) {
     guard hasListeners else { return }
     sendEvent(withName: "foregroundSync", body: ["pending": engine.pendingCount()])
+  }
+
+  func locationEngine(_ engine: LocationEngine, didLog event: [String: Any]) {
+    guard hasListeners else { return }
+    sendEvent(withName: "diagnostic", body: event)
   }
 
   // MARK: - MotionEngineDelegate

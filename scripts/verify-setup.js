@@ -10,6 +10,10 @@ const path = require('path');
 const appRoot = process.cwd();
 const issues = [];
 const ok = [];
+const packageAndroidManifest = path.join(__dirname, '..', 'android', 'src', 'main', 'AndroidManifest.xml');
+const packageManifest = fs.existsSync(packageAndroidManifest)
+  ? fs.readFileSync(packageAndroidManifest, 'utf8')
+  : '';
 
 function check(name, pass, fix) {
   if (pass) ok.push(`✅ ${name}`);
@@ -49,13 +53,16 @@ if (plistPath) {
 const manifestPath = path.join(appRoot, 'android', 'app', 'src', 'main', 'AndroidManifest.xml');
 if (fs.existsSync(manifestPath)) {
   const manifest = fs.readFileSync(manifestPath, 'utf8');
-  check('Android ACCESS_FINE_LOCATION', manifest.includes('ACCESS_FINE_LOCATION'),
+  const mergedSource = `${manifest}\n${packageManifest}`;
+  check('Android ACCESS_FINE_LOCATION', mergedSource.includes('ACCESS_FINE_LOCATION'),
     'Add ACCESS_FINE_LOCATION permission');
-  check('Android ACCESS_BACKGROUND_LOCATION', manifest.includes('ACCESS_BACKGROUND_LOCATION'),
+  check('Android ACCESS_BACKGROUND_LOCATION', mergedSource.includes('ACCESS_BACKGROUND_LOCATION'),
     'Add ACCESS_BACKGROUND_LOCATION for background tracking (API 29+)');
-  check('Android FOREGROUND_SERVICE_LOCATION', manifest.includes('FOREGROUND_SERVICE_LOCATION'),
+  check('Android FOREGROUND_SERVICE_LOCATION', mergedSource.includes('FOREGROUND_SERVICE_LOCATION'),
     'Add FOREGROUND_SERVICE_LOCATION for Android 14+');
-  check('Android ACTIVITY_RECOGNITION (optional)', manifest.includes('ACTIVITY_RECOGNITION'),
+  check('Android FitnessLocationService', mergedSource.includes('FitnessLocationService'),
+    'Ensure the package AndroidManifest.xml is included by React Native autolinking');
+  check('Android ACTIVITY_RECOGNITION (optional)', mergedSource.includes('ACTIVITY_RECOGNITION'),
     'Add ACTIVITY_RECOGNITION for MotionEngine auto-pause');
 } else {
   issues.push('⚠️  AndroidManifest.xml not found — skip if iOS-only');

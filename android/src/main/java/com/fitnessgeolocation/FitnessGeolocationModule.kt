@@ -1,6 +1,7 @@
 package com.fitnessgeolocation
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.content.ContextCompat
@@ -15,7 +16,7 @@ class FitnessGeolocationModule(private val reactContext: ReactApplicationContext
   PermissionListener,
   LifecycleEventListener {
 
-  private val engine = LocationEngine(reactContext, this)
+  private val engine = LocationEngine.getInstance(reactContext)
   private var authPromise: Promise? = null
   private var pendingAuthLevel: String = "whenInUse"
   private var awaitingBackground = false
@@ -27,9 +28,20 @@ class FitnessGeolocationModule(private val reactContext: ReactApplicationContext
 
   init {
     reactContext.addLifecycleEventListener(this)
+    engine.addListener(this)
   }
 
   override fun getName(): String = "FitnessGeolocation"
+
+  @ReactMethod
+  fun addListener(eventName: String) {
+    // Required by NativeEventEmitter. Native engine listeners are registered for module lifetime.
+  }
+
+  @ReactMethod
+  fun removeListeners(count: Int) {
+    // Required by NativeEventEmitter.
+  }
 
   private fun sendEvent(event: String, params: WritableMap?) {
     reactContext
@@ -62,14 +74,22 @@ class FitnessGeolocationModule(private val reactContext: ReactApplicationContext
 
   @ReactMethod
   fun watchPosition(options: ReadableMap): Int {
-    return engine.watchPosition(options)
+    val watchId = engine.watchPosition(options)
+    startForegroundTrackingService()
+    return watchId
   }
 
   @ReactMethod
-  fun clearWatch(watchId: Int) = engine.clearWatch(watchId)
+  fun clearWatch(watchId: Int) {
+    engine.clearWatch(watchId)
+    if (engine.activeWatchCount() == 0) stopForegroundTrackingService()
+  }
 
   @ReactMethod
-  fun stopLocationObserving() = engine.stopObserving()
+  fun stopLocationObserving() {
+    engine.stopObserving()
+    stopForegroundTrackingService()
+  }
 
   @ReactMethod
   fun getPendingForJs(limit: Int, promise: Promise) {
@@ -93,7 +113,26 @@ class FitnessGeolocationModule(private val reactContext: ReactApplicationContext
   }
 
   @ReactMethod
+  fun getDiagnostics(promise: Promise) {
+    promise.resolve(engine.getDiagnostics())
+  }
+
+  @ReactMethod
   fun setConfiguration(config: ReadableMap, promise: Promise) {
+    val editor = reactContext
+      .getSharedPreferences("fitness_geolocation", android.content.Context.MODE_PRIVATE)
+      .edit()
+
+    if (config.hasKey("notificationTitle")) {
+      editor.putString("notification_title", config.getString("notificationTitle"))
+    }
+    if (config.hasKey("notificationText")) {
+      editor.putString("notification_text", config.getString("notificationText"))
+    }
+    if (config.hasKey("trackingMode")) {
+      config.getString("trackingMode")?.let { engine.setTrackingMode(it) }
+    }
+    editor.apply()
     promise.resolve(null)
   }
 
@@ -174,9 +213,9 @@ class FitnessGeolocationModule(private val reactContext: ReactApplicationContext
       REQUEST_BACKGROUND -> {
         awaitingBackground = false
         val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
-        promise.resolve(if (granted) "granted" else "granted")
+        promise.resolve(if (granted) "granted" else "foreground_only")
         authPromise = null
-        emitAuthChange(if (granted) "granted" else "granted")
+        emitAuthChange(if (granted) "granted" else "foreground_only")
       }
     }
     return true
@@ -186,6 +225,21 @@ class FitnessGeolocationModule(private val reactContext: ReactApplicationContext
     val map = Arguments.createMap()
     map.putString("status", status)
     sendEvent("authorizationChange", map)
+  }
+
+  private fun startForegroundTrackingService() {
+    if (!hasFineLocation()) return
+    val intent = Intent(reactContext, FitnessLocationService::class.java)
+      .setAction(FitnessLocationService.ACTION_START)
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      ContextCompat.startForegroundService(reactContext, intent)
+    } else {
+      reactContext.startService(intent)
+    }
+  }
+
+  private fun stopForegroundTrackingService() {
+    reactContext.stopService(Intent(reactContext, FitnessLocationService::class.java))
   }
 
   @ReactMethod
@@ -259,10 +313,20 @@ class FitnessGeolocationModule(private val reactContext: ReactApplicationContext
     sendEvent("foregroundSync", map)
   }
 
+  override fun onDiagnostic(event: WritableMap) {
+    sendEvent("diagnostic", event)
+  }
+
   override fun onHostResume() {
     engine.onHostResume()
   }
 
   override fun onHostPause() {}
-  override fun onHostDestroy() {}
+  override fun onHostDestroy() {
+    engine.removeListener(this)
+  }
+  override fun invalidate() {
+    engine.removeListener(this)
+    super.invalidate()
+  }
 }

@@ -178,7 +178,7 @@ See [SETUP.md](./SETUP.md) for full copy-paste snippets.
 - [x] `ACCESS_BACKGROUND_LOCATION`
 - [x] `FOREGROUND_SERVICE_LOCATION`
 - [x] `ACTIVITY_RECOGNITION`
-- [x] Foreground service via `react-native-background-actions`
+- [x] Foreground service via `FitnessLocationService`
 
 ---
 
@@ -193,6 +193,7 @@ See [SETUP.md](./SETUP.md) for full copy-paste snippets.
 | BackgroundActivitySession | iOS 17+ | `ios/FitnessGeolocation/BackgroundActivitySession.swift` |
 | LocationEngine | Android | `android/.../LocationEngine.kt` |
 | LocationDatabase | Android | `android/.../LocationDatabase.kt` |
+| FitnessLocationService | Android | `android/.../FitnessLocationService.kt` |
 | Geolocation (JS) | Both | `src/Geolocation.ts` |
 
 ---
@@ -236,6 +237,9 @@ await Geolocation.syncPendingLocations();
 - [ ] Test: app kill during activity → relaunch → route intact
 - [ ] Test: pause/resume during activity
 - [ ] Test: Android foreground service notification visible
+- [ ] Test: `BackgroundGeolocation.onLocation(async ...)` failure leaves native row pending
+- [ ] Test: `ready → start → lock screen → foreground → sync → stop` preserves final route segment
+- [ ] Export `getDiagnostics()` after the walk and compare raw, dropped, persisted, pending, and delivered counts
 
 ---
 
@@ -253,7 +257,7 @@ Original design doc: `/smart-location-engine-v1.md` (repo root)
 | Adaptive tracking modes | ✅ Done |
 | GPS filtering | ✅ Heuristic (not Kalman) |
 | ACK server sync pipeline | ❌ v3 |
-| Android foreground service | 📄 App uses background-actions |
+| Android foreground service | ✅ Built into package |
 | HealthKit integration | 📄 App layer |
 | TurboModule | ❌ v3 |
 
