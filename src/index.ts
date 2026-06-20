@@ -1,14 +1,15 @@
-/**
- * react-native-fitness-geolocation
- *
- * Drop-in:  import Geolocation from 'react-native-fitness-geolocation'
- * Advanced: import { FitnessEngine, MotionEngine, PermissionManager } from 'react-native-fitness-geolocation'
- */
-
-export { default, Geolocation } from './Geolocation';
-export { Geolocation as BackgroundGeolocation } from './Geolocation';
+export { default as Geolocation, default as BackgroundGeolocation } from './Geolocation';
 export { PermissionManager } from './PermissionManager';
 export { MotionEngine } from './MotionEngine';
 export { FitnessEngine, createFitnessEngine } from './FitnessEngine';
+export { ActivityManager, createActivityManager } from './ActivityManager';
+export { TimeBasedTracker, timeBasedTracker } from './TimeBasedTracker';
+export { SmartGPSController, smartGPSController } from './SmartGPSController';
+export { OEMBatteryManager } from './OEMBatteryManager';
+export { registerHeadlessTask, isHeadlessTaskRegistered } from './HeadlessTask';
+export { HttpSync, httpSync } from './HttpSync';
+export { Geofencing, geofencing } from './Geofencing';
+export { ProviderEvents } from './ProviderEvents';
+export { DebugMonitor, debugMonitor } from './DebugMonitor';
 export { PositionError } from './types';
-export * from './types';
+export type * from './types';

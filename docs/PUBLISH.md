@@ -72,9 +72,31 @@ git push && git push --tags
 ## Install in any React Native app
 
 ```bash
-yarn add react-native-fitness-geolocation
+yarn add react-native-fitness-geolocation@2.0.0
 cd ios && pod install
 ```
+
+### Yarn 4 — “quarantined” / YN0016 error
+
+Yarn 4 defaults to blocking npm packages published in the last **24 hours**. If you see:
+
+```
+YN0016: The version for tag "latest" is quarantined
+```
+
+Use one of:
+
+```bash
+# One-time bypass
+yarn add react-native-fitness-geolocation@2.0.0 --no-time-gate
+
+# Or in .yarnrc.yml (MFC-App already has this):
+npmMinimalAgeGate: 0
+npmPreapprovedPackages:
+  - react-native-fitness-geolocation
+```
+
+Or wait ~24h after first publish — then `latest` installs normally.
 
 See [SETUP.md](./SETUP.md) for Info.plist and AndroidManifest requirements.
 

@@ -7,14 +7,17 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
 
 class FitnessLocationService : Service() {
   private lateinit var engine: LocationEngine
+  private val tag = "FitnessGeoService"
 
   override fun onCreate() {
     super.onCreate()
     engine = LocationEngine.getInstance(applicationContext)
+    Log.d(tag, "service_created")
   }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -23,11 +26,39 @@ class FitnessLocationService : Service() {
       return START_NOT_STICKY
     }
 
-    startForegroundService()
+    try {
+      startForegroundService()
+    } catch (e: java.lang.Exception) {
+      // Android 12+ ForegroundServiceStartNotAllowedException or similar
+      Log.w(tag, "foreground_service_start_failed: ${e.message}")
+      // The service will retry when startForegroundTrackingService() is called again
+      // (each watchPosition/startTimeBasedTracking triggers it)
+    }
+
+    // START_STICKY is critical — Android will recreate the service if killed
     return START_STICKY
   }
 
   override fun onBind(intent: Intent?): IBinder? = null
+
+  /**
+   * Update the notification text dynamically (called from DebugMonitor
+   * or ActivityManager when activity state changes).
+   */
+  fun updateNotificationText(title: String, text: String) {
+    val builder = NotificationCompat.Builder(this, CHANNEL_ID)
+      .setSmallIcon(resolveSmallIcon())
+      .setContentTitle(title)
+      .setContentText(text)
+      .setOngoing(true)
+      .setOnlyAlertOnce(true)
+      .setCategory(NotificationCompat.CATEGORY_SERVICE)
+      .setPriority(NotificationCompat.PRIORITY_LOW)
+
+    val notification = builder.build()
+    val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+    manager.notify(NOTIFICATION_ID, notification)
+  }
 
   override fun onDestroy() {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
@@ -36,6 +67,7 @@ class FitnessLocationService : Service() {
       @Suppress("DEPRECATION")
       stopForeground(true)
     }
+    Log.d(tag, "service_destroyed")
     super.onDestroy()
   }
 
@@ -44,10 +76,10 @@ class FitnessLocationService : Service() {
     val prefs = getSharedPreferences("fitness_geolocation", MODE_PRIVATE)
     val notification = NotificationCompat.Builder(this, CHANNEL_ID)
       .setSmallIcon(resolveSmallIcon())
-      .setContentTitle(prefs.getString("notification_title", "Activity tracking") ?: "Activity tracking")
+      .setContentTitle(prefs.getString("notification_title", "Tracking activity") ?: "Tracking activity")
       .setContentText(
-        prefs.getString("notification_text", "Recording your workout location")
-          ?: "Recording your workout location",
+        prefs.getString("notification_text", "Recording your route")
+          ?: "Recording your route",
       )
       .setOngoing(true)
       .setOnlyAlertOnce(true)
@@ -60,6 +92,8 @@ class FitnessLocationService : Service() {
     } else {
       startForeground(NOTIFICATION_ID, notification)
     }
+
+    Log.d(tag, "foreground_service_started")
   }
 
   private fun stopForegroundService() {
@@ -70,6 +104,7 @@ class FitnessLocationService : Service() {
       stopForeground(true)
     }
     stopSelf()
+    Log.d(tag, "foreground_service_stopped")
   }
 
   private fun ensureChannel() {
