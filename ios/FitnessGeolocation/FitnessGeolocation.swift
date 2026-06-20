@@ -51,7 +51,10 @@ class FitnessGeolocation: RCTEventEmitter, LocationEngineDelegate, MotionEngineD
   func clearWatch(_ watchId: NSNumber) { engine.clearWatch(watchId.intValue) }
 
   @objc(stopLocationObserving)
-  func stopLocationObserving() { engine.stopObserving() }
+  func stopLocationObserving() {
+    engine.stopObserving()
+    motion.stop()
+  }
 
   @objc(getPendingForJs:resolver:rejecter:)
   func getPendingForJs(_ limit: NSNumber, resolver resolve: @escaping RCTPromiseResolveBlock,

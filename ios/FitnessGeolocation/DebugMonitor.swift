@@ -4,6 +4,16 @@ import AudioToolbox
 import UserNotifications
 import os.log
 
+// MARK: - DebugMonitorDelegate
+
+/// Protocol for DebugMonitor events — kept in this file so CocoaPods always compiles it with DebugMonitor.
+@objc protocol DebugMonitorDelegate: AnyObject {
+  func debugMonitor(_ monitor: AnyObject, didChangeEnabled enabled: Bool)
+  func debugMonitor(_ monitor: AnyObject, didEmitMotionState state: [String: Any])
+  func debugMonitor(_ monitor: AnyObject, didEmitHeartbeat event: [String: Any])
+  func debugMonitor(_ monitor: AnyObject, didEmitLifecycleEvent event: [String: Any])
+}
+
 // MARK: - Motion State Machine
 
 enum MotionState: String {

@@ -11,7 +11,7 @@ Engineering reference for deploying and maintaining react-native-fitness-geoloca
 | **Package** | `react-native-fitness-geolocation` v2.0.0 |
 | **Type** | React Native native module |
 | **Replaces** | `@react-native-community/geolocation` (activity tracking) |
-| **Production app** | MFC-App (My Fitness Coach) |
+| **Production app** | lifeTracker |
 | **Install** | `file:../packages/react-native-fitness-geolocation` |
 
 ---
@@ -27,12 +27,12 @@ Engineering reference for deploying and maintaining react-native-fitness-geoloca
 
 ---
 
-## Quick integration (MFC-App pattern)
+## Quick integration (lifeTracker pattern)
 
 ### Step 1 — Install
 
 ```json
-// MFC-App/package.json
+// lifeTracker/package.json
 "react-native-fitness-geolocation": "file:../packages/react-native-fitness-geolocation"
 ```
 
@@ -43,11 +43,8 @@ cd ios && pod install
 
 ### Step 2 — Swap import (only code change)
 
-```javascript
-// LocationTrackingService.js
-import Geolocation from 'react-native-fitness-geolocation';
-
-// LocationService.js
+```typescript
+// TrackingSession.ts
 import Geolocation from 'react-native-fitness-geolocation';
 ```
 
@@ -57,7 +54,7 @@ import Geolocation from 'react-native-fitness-geolocation';
 node node_modules/react-native-fitness-geolocation/scripts/verify-setup.js
 ```
 
-MFC-App already passes all checks.
+lifeTracker already passes all checks.
 
 ### Step 4 — Rebuild on device
 
@@ -230,7 +227,7 @@ await Geolocation.syncPendingLocations();
 
 - [ ] Bump version in `package.json`
 - [ ] `yarn prepare` (bob build)
-- [ ] MFC-App `yarn install`
+- [ ] lifeTracker `yarn install`
 - [ ] `cd ios && pod install`
 - [ ] `verify-setup.js` passes
 - [ ] Test: 10+ min locked-screen walk on iOS device

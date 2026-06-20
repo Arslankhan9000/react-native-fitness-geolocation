@@ -10,6 +10,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
+import android.util.Log
 import androidx.core.content.ContextCompat
 import com.facebook.react.bridge.*
 import com.facebook.react.modules.core.DeviceEventManagerModule
@@ -208,7 +209,7 @@ class FitnessGeolocationModule(private val reactContext: ReactApplicationContext
 
   override fun onRequestPermissionsResult(
     requestCode: Int,
-    permissions: Array<out String>,
+    permissions: Array<String>,
     grantResults: IntArray,
   ): Boolean {
     val promise = authPromise ?: return false
@@ -695,7 +696,7 @@ class FitnessGeolocationModule(private val reactContext: ReactApplicationContext
 
   @ReactMethod
   fun addGeofences(geofences: ReadableArray, promise: Promise) {
-    val list = (0 until geofences.size()).map { geofences.getMap(it).toHashMap() }
+    val list = (0 until geofences.size()).mapNotNull { geofences.getMap(it)?.toHashMap() }
     promise.resolve(engine.addGeofences(list))
   }
 
@@ -706,7 +707,11 @@ class FitnessGeolocationModule(private val reactContext: ReactApplicationContext
 
   @ReactMethod
   fun removeGeofences(identifiers: ReadableArray?, promise: Promise) {
-    val ids = if (identifiers != null) (0 until identifiers.size()).map { identifiers.getString(it) } else null
+    val ids = if (identifiers != null) {
+      (0 until identifiers.size()).mapNotNull { identifiers.getString(it) }
+    } else {
+      null
+    }
     promise.resolve(engine.removeGeofences(ids))
   }
 

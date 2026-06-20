@@ -127,14 +127,16 @@ class HeartbeatEngine {
 
   fun start() {
     stop()
-    val r = Runnable {
-      delegate?.onHeartbeat(mapOf(
-        "event" to "heartbeat",
-        "message" to "Heartbeat",
-        "timestamp" to System.currentTimeMillis().toDouble(),
-      ))
-      delegate?.onSound("heartbeat")
-      handler.postDelayed(r, intervalSeconds * 1000)
+    val r = object : Runnable {
+      override fun run() {
+        delegate?.onHeartbeat(mapOf(
+          "event" to "heartbeat",
+          "message" to "Heartbeat",
+          "timestamp" to System.currentTimeMillis().toDouble(),
+        ))
+        delegate?.onSound("heartbeat")
+        handler.postDelayed(this, intervalSeconds * 1000)
+      }
     }
     runnable = r
     handler.postDelayed(r, intervalSeconds * 1000)

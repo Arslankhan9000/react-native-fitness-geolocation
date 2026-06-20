@@ -9,22 +9,16 @@
 
 ```bash
 # 1. From monorepo — link locally
-cd MFC-App
+cd lifeTracker
 yarn install
 cd ios && pod install && cd ..
 
-# 2. Enable SDK in app (after testing with false first)
-# Edit src/config/geolocation.config.js → USE_FITNESS_GEO = true
+# 2. Verify platform config
+node node_modules/react-native-fitness-geolocation/scripts/verify-setup.js
 
-# 3. Verify platform config
-node ../packages/react-native-fitness-geolocation/scripts/verify-setup.js
-
-# 4. Test on real iOS device
+# 3. Run on device
 yarn ios
-# - Start activity, lock screen 10+ min, unlock — route should be complete
-
-# 5. Toggle back to false to confirm legacy still works
-# USE_FITNESS_GEO = false → rebuild → same flows work
+# - Start recording, lock screen 10+ min, unlock — route should be complete
 ```
 
 ## Git init (standalone repo)
@@ -90,7 +84,7 @@ Use one of:
 # One-time bypass
 yarn add react-native-fitness-geolocation@2.0.0 --no-time-gate
 
-# Or in .yarnrc.yml (MFC-App already has this):
+# Or in .yarnrc.yml (lifeTracker example):
 npmMinimalAgeGate: 0
 npmPreapprovedPackages:
   - react-native-fitness-geolocation
@@ -100,7 +94,9 @@ Or wait ~24h after first publish — then `latest` installs normally.
 
 See [SETUP.md](./SETUP.md) for Info.plist and AndroidManifest requirements.
 
-## MFC-App monorepo install (development)
+## Monorepo install (development)
+
+Use in **lifeTracker** or any sibling app:
 
 ```json
 "react-native-fitness-geolocation": "file:../packages/react-native-fitness-geolocation"

@@ -444,15 +444,32 @@ export const Geolocation = {
 
   clearWatch(watchId: number): void {
     const entry = watchRegistry.get(watchId);
+    const willBeEmpty = watchRegistry.size <= 1 && watchRegistry.has(watchId);
+
+    // Stop native GPS immediately when last watch ends — do not wait for queue drain.
+    if (willBeEmpty) {
+      watchRegistry.delete(watchId);
+      Native.clearWatch(watchId);
+      if (entry?.motion) {
+        motionWatchCount = 0;
+        stopMotionIfNeeded();
+      } else {
+        motionWatchCount = 0;
+        Native.stopMotionTracking?.().catch(() => {});
+      }
+      Native.stopLocationObserving();
+      drainNativeQueueToWatches().finally(() => {
+        Native.purgeDelivered?.().catch(() => {});
+      });
+      return;
+    }
+
     const finishClear = () => {
       watchRegistry.delete(watchId);
       Native.clearWatch(watchId);
       if (entry?.motion) {
         motionWatchCount = Math.max(0, motionWatchCount - 1);
         if (motionWatchCount === 0) stopMotionIfNeeded();
-      }
-      if (watchRegistry.size === 0) {
-        Native.purgeDelivered?.().catch(() => {});
       }
     };
 
@@ -465,11 +482,11 @@ export const Geolocation = {
   },
 
   stopObserving(): void {
+    watchRegistry.clear();
+    motionWatchCount = 0;
+    Native.stopLocationObserving();
+    Native.stopMotionTracking?.().catch(() => {});
     drainNativeQueueToWatches().finally(() => {
-      watchRegistry.clear();
-      Native.stopLocationObserving();
-      motionWatchCount = 0;
-      Native.stopMotionTracking?.().catch(() => {});
       Native.purgeDelivered?.().catch(() => {});
     });
   },

@@ -17,4 +17,5 @@ Pod::Spec.new do |s|
 
   s.dependency "React-Core"
   s.frameworks = "CoreLocation", "CoreMotion", "UIKit"
+  s.libraries = "sqlite3"
 end

@@ -133,7 +133,7 @@ node node_modules/react-native-fitness-geolocation/scripts/verify-setup.js
 
 ---
 
-## MFC-App checklist (already configured ✅)
+## lifeTracker checklist (already configured ✅)
 
 Your project already has:
 - ✅ `UIBackgroundModes: location`
@@ -143,7 +143,7 @@ Your project already has:
 - ✅ Android `FOREGROUND_SERVICE_LOCATION`
 - ✅ `react-native-background-actions` for app-specific notification text / step loop
 
-No additional manifest/plist changes needed for MFC-App.
+No additional manifest/plist changes needed for lifeTracker.
 
 ---
 

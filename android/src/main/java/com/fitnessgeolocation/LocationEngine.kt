@@ -3,8 +3,11 @@ package com.fitnessgeolocation
 import android.annotation.SuppressLint
 import android.app.Application
 import android.content.Context
+import android.content.pm.PackageManager
 import android.location.Location
+import android.Manifest
 import android.os.Looper
+import android.os.PowerManager
 import android.util.Log
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.ReadableMap
@@ -456,7 +459,7 @@ class LocationEngine private constructor(
     }
 
     timeBasedRunnable = Runnable { flushTimeBasedTick() }
-    timeBasedHandler?.postDelayed(timeBasedRunnable, currentInterval)
+    timeBasedRunnable?.let { timeBasedHandler?.postDelayed(it, currentInterval) }
   }
 
   private fun flushTimeBasedTick() {
@@ -485,7 +488,7 @@ class LocationEngine private constructor(
       startTimeBasedUpdates()
       startTimeBasedTimer()
     } else {
-      timeBasedHandler?.postDelayed(timeBasedRunnable, timeBasedIntervalMs)
+      timeBasedRunnable?.let { timeBasedHandler?.postDelayed(it, timeBasedIntervalMs) }
     }
 
     // Notify listeners
@@ -496,7 +499,7 @@ class LocationEngine private constructor(
     }
 
     // DEV logcat
-    Log.d(TAG, "tick lat=${loc.latitude} lng=${loc.longitude} acc=${loc.accuracy} spd=${loc.speed} gps=$stationary=${timeBasedIsStationary} dist=${cumulativeDistance}")
+    Log.d(TAG, "tick lat=${loc.latitude} lng=${loc.longitude} acc=${loc.accuracy} spd=${loc.speed} gps=$strength stationary=$timeBasedIsStationary dist=$cumulativeDistance")
   }
 
   private fun processTimeBasedLocation(loc: Location) {
@@ -583,6 +586,8 @@ class LocationEngine private constructor(
 
   private fun stopUpdatesInternal(keepWatchState: Boolean) {
     isWatching = false
+    gpsSuspended = false
+    cancelStopTimeout()
     callback?.let { fusedClient.removeLocationUpdates(it) }
     callback = null
     filter.reset()
@@ -592,6 +597,7 @@ class LocationEngine private constructor(
       prefs.edit().putBoolean("watch_active", false).apply()
     }
     log("watch-stop", mapOf("pending" to database.pendingCount()))
+    devLog("info", "LocationEngine", "watch_stopped", mapOf("pending" to database.pendingCount()))
   }
 
   @SuppressLint("MissingPermission")
@@ -1117,7 +1123,7 @@ class LocationEngine private constructor(
     map.putBoolean("accelerometer", pm.hasSystemFeature(PackageManager.FEATURE_SENSOR_ACCELEROMETER))
     map.putBoolean("gyroscope", pm.hasSystemFeature(PackageManager.FEATURE_SENSOR_GYROSCOPE))
     map.putBoolean("magnetometer", pm.hasSystemFeature(PackageManager.FEATURE_SENSOR_COMPASS))
-    map.putBoolean("significantMotion", pm.hasSystemFeature(PackageManager.FEATURE_SENSOR_SIGNIFICANT_MOTION))
+    map.putBoolean("significantMotion", pm.hasSystemFeature("android.hardware.sensor.significant_motion"))
     return map
   }
 

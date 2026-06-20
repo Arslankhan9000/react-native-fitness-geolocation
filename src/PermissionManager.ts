@@ -1,7 +1,13 @@
 import { Linking, NativeModules, PermissionsAndroid, Platform } from 'react-native';
 import type { FitnessPermissionResult } from './types';
 
-const Native = NativeModules.FitnessGeolocation;
+const LINKING_ERROR =
+  `The package 'react-native-fitness-geolocation' doesn't seem to be linked. ` +
+  'Run pod install (iOS) and rebuild the app.';
+
+const Native = NativeModules.FitnessGeolocation
+  ? NativeModules.FitnessGeolocation
+  : new Proxy({}, { get() { throw new Error(LINKING_ERROR); } });
 
 const ANDROID_FINE = PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION;
 const ANDROID_BACKGROUND = PermissionsAndroid.PERMISSIONS.ACCESS_BACKGROUND_LOCATION;

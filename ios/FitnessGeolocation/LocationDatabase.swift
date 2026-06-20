@@ -171,7 +171,7 @@ final class LocationDatabase {
   private func migrateIfNeeded() {
     queue.sync {
       var stmt: OpaquePointer?
-      guard sqlite3_prepare_v2(db, "PRAGMA table_info(locations)", -1, &stmt, nil) == SQLITE_OK else { return }
+      guard sqlite3_prepare_v2(db, "PRAGMA table_info(locations)", -1, &stmt, nil) == SQLITE_OK, let stmt else { return }
       defer { sqlite3_finalize(stmt) }
       var columns = Set<String>()
       while sqlite3_step(stmt) == SQLITE_ROW {
@@ -214,7 +214,7 @@ final class LocationDatabase {
       sqlite3_bind_text(stmt, 12, (location.motionState as NSString).utf8String, -1, nil)
       sqlite3_bind_double(stmt, 13, location.confidence)
       sqlite3_bind_text(stmt, 14, (location.sessionId as NSString).utf8String, -1, nil)
-      sqlite3_bind_int32(stmt, 15, location.deliveredToJs ? 1 : 0)
+      sqlite3_bind_int(stmt, 15, location.deliveredToJs ? Int32(1) : Int32(0))
       sqlite3_bind_double(stmt, 16, location.distanceFromPrev)
       sqlite3_bind_double(stmt, 17, location.cumulativeDistance)
 
@@ -223,11 +223,11 @@ final class LocationDatabase {
   }
 
   func getPendingForJs(limit: Int32 = 200) -> [StoredLocation] {
-    queue.sync {
+    return queue.sync { () -> [StoredLocation] in
       guard let stmt = pendingForJsStmt else { return [] }
       sqlite3_reset(stmt)
       sqlite3_clear_bindings(stmt)
-      sqlite3_bind_int32(stmt, 1, limit)
+      sqlite3_bind_int(stmt, 1, limit)
 
       var results: [StoredLocation] = []
       while sqlite3_step(stmt) == SQLITE_ROW {
@@ -238,12 +238,12 @@ final class LocationDatabase {
   }
 
   func getPendingForSession(sessionId: String, limit: Int32 = 5000) -> [StoredLocation] {
-    queue.sync {
+    return queue.sync { () -> [StoredLocation] in
       guard let stmt = pendingForSessionStmt else { return [] }
       sqlite3_reset(stmt)
       sqlite3_clear_bindings(stmt)
       sqlite3_bind_text(stmt, 1, (sessionId as NSString).utf8String, -1, nil)
-      sqlite3_bind_int32(stmt, 2, limit)
+      sqlite3_bind_int(stmt, 2, limit)
 
       var results: [StoredLocation] = []
       while sqlite3_step(stmt) == SQLITE_ROW {
@@ -259,7 +259,7 @@ final class LocationDatabase {
       let ph = ids.map { _ in "?" }.joined(separator: ",")
       let sql = "UPDATE locations SET delivered_to_js = 1 WHERE id IN (\(ph))"
       var stmt: OpaquePointer?
-      guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return 0 }
+      guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else { return 0 }
       defer { sqlite3_finalize(stmt) }
       for (i, id) in ids.enumerated() {
         sqlite3_bind_text(stmt, Int32(i + 1), (id as NSString).utf8String, -1, nil)
@@ -275,7 +275,7 @@ final class LocationDatabase {
       let ph = ids.map { _ in "?" }.joined(separator: ",")
       let sql = "DELETE FROM locations WHERE id IN (\(ph))"
       var stmt: OpaquePointer?
-      guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return 0 }
+      guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else { return 0 }
       defer { sqlite3_finalize(stmt) }
       for (i, id) in ids.enumerated() {
         sqlite3_bind_text(stmt, Int32(i + 1), (id as NSString).utf8String, -1, nil)
@@ -289,7 +289,7 @@ final class LocationDatabase {
     queue.sync {
       guard let stmt = pendingCountStmt else { return 0 }
       sqlite3_reset(stmt)
-      if sqlite3_step(stmt) == SQLITE_ROW { return sqlite3_column_int(stmt, 0) }
+      if sqlite3_step(stmt) == SQLITE_ROW { return Int(sqlite3_column_int(stmt, 0)) }
       return 0
     }
   }
@@ -316,7 +316,7 @@ final class LocationDatabase {
     queue.sync {
       var stmt: OpaquePointer?
       let sql = "INSERT INTO sessions (id, name, activity_type, start_time, extras) VALUES (?, ?, ?, ?, ?)"
-      guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+      guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else { return }
       defer { sqlite3_finalize(stmt) }
       sqlite3_bind_text(stmt, 1, (id as NSString).utf8String, -1, nil)
       sqlite3_bind_text(stmt, 2, (name as NSString).utf8String, -1, nil)
@@ -342,7 +342,7 @@ final class LocationDatabase {
         average_accuracy = ?, point_count = ?
       WHERE id = ?
       """
-      guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+      guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else { return }
       defer { sqlite3_finalize(stmt) }
       sqlite3_bind_int64(stmt, 1, Int64(Date().timeIntervalSince1970 * 1000))
       sqlite3_bind_double(stmt, 2, (data["totalDistance"] as? Double) ?? 0)
@@ -351,7 +351,7 @@ final class LocationDatabase {
       sqlite3_bind_double(stmt, 5, (data["maxSpeed"] as? Double) ?? 0)
       sqlite3_bind_double(stmt, 6, (data["elevationGain"] as? Double) ?? 0)
       sqlite3_bind_double(stmt, 7, (data["averageAccuracy"] as? Double) ?? 0)
-      sqlite3_bind_int32(stmt, 8, Int32((data["pointCount"] as? Int) ?? 0))
+      sqlite3_bind_int(stmt, 8, Int32((data["pointCount"] as? Int) ?? 0))
       sqlite3_bind_text(stmt, 9, (sessionId as NSString).utf8String, -1, nil)
       sqlite3_step(stmt)
     }
@@ -362,12 +362,14 @@ final class LocationDatabase {
       var stmt1: OpaquePointer?
       var stmt2: OpaquePointer?
       // Use parameterized queries — NEVER string interpolation with SQL
-      if sqlite3_prepare_v2(db, "DELETE FROM locations WHERE session_id = ?", -1, &stmt1, nil) == SQLITE_OK {
+      if sqlite3_prepare_v2(db, "DELETE FROM locations WHERE session_id = ?", -1, &stmt1, nil) == SQLITE_OK,
+         let stmt1 {
         sqlite3_bind_text(stmt1, 1, (sessionId as NSString).utf8String, -1, nil)
         sqlite3_step(stmt1)
         sqlite3_finalize(stmt1)
       }
-      if sqlite3_prepare_v2(db, "DELETE FROM sessions WHERE id = ?", -1, &stmt2, nil) == SQLITE_OK {
+      if sqlite3_prepare_v2(db, "DELETE FROM sessions WHERE id = ?", -1, &stmt2, nil) == SQLITE_OK,
+         let stmt2 {
         sqlite3_bind_text(stmt2, 1, (sessionId as NSString).utf8String, -1, nil)
         sqlite3_step(stmt2)
         sqlite3_finalize(stmt2)
@@ -380,7 +382,7 @@ final class LocationDatabase {
       var results: [[String: Any]] = []
       let sql = "SELECT * FROM sessions WHERE uploaded = 0 ORDER BY start_time ASC"
       var stmt: OpaquePointer?
-      guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+      guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else { return [] }
       defer { sqlite3_finalize(stmt) }
       while sqlite3_step(stmt) == SQLITE_ROW {
         results.append(sessionFrom(stmt: stmt))
@@ -396,7 +398,7 @@ final class LocationDatabase {
     queue.sync {
       var stmt: OpaquePointer?
       let sql = "SELECT * FROM sessions WHERE id = ?"
-      guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+      guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else { return }
       defer { sqlite3_finalize(stmt) }
       sqlite3_bind_text(stmt, 1, (sessionId as NSString).utf8String, -1, nil)
       guard sqlite3_step(stmt) == SQLITE_ROW else { return }
@@ -412,13 +414,16 @@ final class LocationDatabase {
     queue.sync {
       var stmt: OpaquePointer?
       // Parameterized query — no string interpolation
-      if sqlite3_prepare_v2(db, "UPDATE sessions SET uploaded = 1 WHERE id = ?", -1, &stmt, nil) == SQLITE_OK {
+      if sqlite3_prepare_v2(db, "UPDATE sessions SET uploaded = 1 WHERE id = ?", -1, &stmt, nil) == SQLITE_OK,
+         let stmt {
         sqlite3_bind_text(stmt, 1, (sessionId as NSString).utf8String, -1, nil)
         sqlite3_step(stmt)
         sqlite3_finalize(stmt)
       }
       // Clean up points
-      if sqlite3_prepare_v2(db, "DELETE FROM locations WHERE session_id = ?", -1, &stmt, nil) == SQLITE_OK {
+      stmt = nil
+      if sqlite3_prepare_v2(db, "DELETE FROM locations WHERE session_id = ?", -1, &stmt, nil) == SQLITE_OK,
+         let stmt {
         sqlite3_bind_text(stmt, 1, (sessionId as NSString).utf8String, -1, nil)
         sqlite3_step(stmt)
         sqlite3_finalize(stmt)

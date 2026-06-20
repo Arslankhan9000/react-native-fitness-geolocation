@@ -8,7 +8,7 @@ Structured reference for AI coding assistants. Last updated: June 2026.
 
 `react-native-fitness-geolocation` is a React Native native module that replaces `@react-native-community/geolocation` for fitness activity tracking. It provides Strava-class reliability: native background GPS, SQLite persistence, motion intelligence, and automatic sync to JS when the app returns to foreground.
 
-**Primary consumer:** MFC-App (`My Fitness Coach`) — physical activity tracking screen.
+**Primary consumer:** **lifeTracker** — production React Native client (Record tab, GPS sessions, Realm persistence).
 
 **Install path:** `file:../packages/react-native-fitness-geolocation` (monorepo local package).
 
@@ -58,7 +58,7 @@ Structured reference for AI coding assistants. Last updated: June 2026.
 2. Native starts `CLLocationManager.startUpdatingLocation()` / FusedLocationProvider
 3. Android starts `FitnessLocationService`; native starts `MotionEngine` where available
 4. GPS fix → `LocationFilter.process()` → SQLite insert → emit `watchPosition` event
-5. JS callback runs → MFC-App `saveCoordinate()` → Realm
+5. JS callback runs → lifeTracker `RealmLocationStore.enqueue()` → Realm
 
 ### 3.2 Background tracking (screen locked)
 
@@ -74,7 +74,7 @@ Structured reference for AI coding assistants. Last updated: June 2026.
 2. Native emits `foregroundSync` event
 3. JS `drainNativeQueueToWatches()` calls `getPendingForJs(limit)`
 4. Each pending row replayed through **all active watch callbacks** (same as live GPS)
-5. MFC-App `saveCoordinate()` writes to Realm
+5. lifeTracker `RealmLocationStore` writes batched points to Realm
 6. `markDelivered(ids)` prevents double-replay
 7. `purgeDelivered()` on watch stop cleans native backup
 
@@ -255,17 +255,17 @@ Requires app Info.plist (documented in SETUP.md):
 
 ---
 
-## 8. MFC-App file references
+## 8. lifeTracker file references
 
 | File | Role |
 |------|------|
-| `MFC-App/src/screens/track_physical_activities/utils/LocationTrackingService.js` | Main tracker — `watchPosition`, batching, Realm |
-| `MFC-App/src/screens/track_physical_activities/components/LocationService.js` | Permission + getCurrentCoords for map |
-| `MFC-App/src/screens/track_physical_activities/ActivityMap.js` | Map UI, auto-pause modal |
-| `MFC-App/src/screens/track_physical_activities/hook/useActivityTracker.js` | Reads Realm coords for polyline |
-| `MFC-App/src/screens/track_physical_activities/StartActivityScreen.js` | Pre-activity permission flow |
+| `lifeTracker/src/services/TrackingSession.ts` | Main tracker — `watchPosition`, session lifecycle, listeners |
+| `lifeTracker/src/services/RealmLocationStore.ts` | Batched Realm persistence for GPS points |
+| `lifeTracker/src/services/PermissionService.ts` | Permission flow + fitness-geolocation engine |
+| `lifeTracker/src/screens/record/RecordScreen.tsx` | Record tab UI — map, HUD, controls |
+| `lifeTracker/src/components/TrackMap.tsx` | Map + route polyline |
 
-MFC-App also uses:
+lifeTracker also uses:
 - `react-native-background-actions` — app-specific notification text and step counter loop (GPS foreground service is built in)
 - `realm` — app session + LocationPoint storage (NOT replaced; native SQLite is GPS buffer only)
 
@@ -273,19 +273,19 @@ MFC-App also uses:
 
 ## 9. SDK vs app responsibilities
 
-| Responsibility | SDK | MFC-App |
+| Responsibility | SDK | lifeTracker |
 |----------------|-----|---------|
 | Background GPS collection | ✅ | — |
 | SQLite GPS buffer | ✅ | — |
-| Foreground → Realm replay | ✅ (via callbacks) | saveCoordinate |
+| Foreground → Realm replay | ✅ (via callbacks) | RealmLocationStore |
 | Realm session/points | — | ✅ |
 | Map / polyline UI | — | ✅ |
 | GPS foreground service | ✅ | — |
-| Custom notification text | basic default | ✅ background-actions |
-| Step counting | MotionEngine optional | ✅ stepCounterHelper |
-| HealthKit sync | — | ✅ react-native-health |
-| Server upload | — | ✅ app API |
-| Auto-pause UI modal | emits events | ✅ NotMovingModal |
+| Custom notification text | basic default | ✅ background-actions in TrackingSession |
+| Step counting | MotionEngine optional | — (future) |
+| HealthKit sync | — | — (Phase 2) |
+| Server upload | — | — (Phase 2 API) |
+| Auto-pause UI modal | emits events | — (future) |
 | Min distance validation | — | ✅ ActivityMap |
 
 ---
@@ -343,12 +343,15 @@ Warmup: first 3 good fixes accepted without sanity check.
 4. Verify Info.plist `UIBackgroundModes: location`
 5. Test on real device (not simulator)
 
-### MFC-App import migration
-Only change:
-```javascript
+### lifeTracker import
+
+lifeTracker uses the SDK directly:
+
+```typescript
 import Geolocation from 'react-native-fitness-geolocation';
 ```
-Do NOT add `startTracking()` or platform conditionals unless explicitly requested.
+
+No adapter layer required — see `TrackingSession.ts` and `PermissionService.ts`.
 
 ---
 
@@ -361,7 +364,7 @@ packages/react-native-fitness-geolocation/
 # Autolinking requires podspec at package ROOT
 FitnessGeolocation.podspec
 
-# MFC-App install
+# lifeTracker install
 yarn add file:../packages/react-native-fitness-geolocation
 cd ios && pod install
 

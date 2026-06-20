@@ -1,6 +1,6 @@
 # AI Agent Context — react-native-fitness-geolocation
 
-> Read this first when working on the geo SDK or MFC-App activity tracking.
+> Read this first when working on the geo SDK or **lifeTracker** activity recording.
 
 ## Package
 
@@ -11,21 +11,21 @@
 | Native module | `FitnessGeolocation` |
 | Version | 2.0.0 |
 
-## MFC-App toggle (minimal integration)
-
-```javascript
-// MFC-App/src/config/geolocation.config.js
-export const USE_FITNESS_GEO = false; // true = react-native-fitness-geolocation, false = legacy community geolocation
-```
+## lifeTracker integration
 
 | File | Role |
 |------|------|
-| `src/config/geolocation.config.js` | Single boolean toggle |
-| `src/utils/geolocationProvider.js` | Routes to legacy or SDK |
-| `LocationTrackingService.js` | Uses `getTrackingGeolocation()` — unchanged logic |
-| `LocationService.js` | Uses `getPermissionGeolocation()` — unchanged logic |
+| `lifeTracker/src/services/TrackingSession.ts` | Persistent GPS session, background service, live stream |
+| `lifeTracker/src/services/RealmLocationStore.ts` | Batched Realm writes for location points |
+| `lifeTracker/src/services/PermissionService.ts` | Permission education flow + fitness-geolocation engine |
+| `lifeTracker/src/screens/record/RecordScreen.tsx` | Record tab — map, HUD, start/stop |
+| `lifeTracker/src/components/TrackMap.tsx` | Map + polyline UI |
 
-**Do not** import `react-native-fitness-geolocation` directly in app files — always go through `geolocationProvider.js`.
+lifeTracker imports the SDK directly:
+
+```typescript
+import Geolocation from 'react-native-fitness-geolocation';
+```
 
 ## Docs
 

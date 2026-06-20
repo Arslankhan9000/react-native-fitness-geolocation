@@ -1,4 +1,4 @@
-export { default as Geolocation, default as BackgroundGeolocation } from './Geolocation';
+export { default as Geolocation, default as BackgroundGeolocation, default } from './Geolocation';
 export { PermissionManager } from './PermissionManager';
 export { MotionEngine } from './MotionEngine';
 export { FitnessEngine, createFitnessEngine } from './FitnessEngine';
@@ -11,5 +11,7 @@ export { HttpSync, httpSync } from './HttpSync';
 export { Geofencing, geofencing } from './Geofencing';
 export { ProviderEvents } from './ProviderEvents';
 export { DebugMonitor, debugMonitor } from './DebugMonitor';
+export { FitnessTrackingService } from './FitnessTrackingService';
+export { default as fitnessTrackingService } from './FitnessTrackingService';
 export { PositionError } from './types';
 export type * from './types';

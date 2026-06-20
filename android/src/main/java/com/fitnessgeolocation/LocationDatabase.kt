@@ -147,6 +147,11 @@ class LocationDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, nu
     return 0
   }
 
+  fun clearAll() {
+    writableDatabase.delete("locations", null, null)
+    writableDatabase.delete("sessions", null, null)
+  }
+
   fun deleteLocationsForSession(sessionId: String) {
     writableDatabase.delete("locations", "session_id = ?", arrayOf(sessionId))
   }

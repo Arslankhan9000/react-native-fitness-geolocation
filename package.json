@@ -1,6 +1,6 @@
 {
   "name": "react-native-fitness-geolocation",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "React Native fitness GPS — background activity tracking, native SQLite persistence, motion auto-pause. Drop-in geolocation for Strava-class apps.",
   "main": "lib/commonjs/index.js",
   "module": "lib/module/index.js",

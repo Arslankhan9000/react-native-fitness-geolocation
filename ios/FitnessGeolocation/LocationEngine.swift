@@ -133,8 +133,10 @@ final class LocationEngine: NSObject {
   }
 
   @objc private func appWillTerminate() {
-    // Register stationary geofence so iOS wakes us when user moves
-    registerStationaryGeofence()
+    // Only arm wake geofence if tracking was active when the OS kills the app.
+    if isWatching || timeBasedWatchId != nil || UserDefaults.standard.bool(forKey: watchStateKey) {
+      registerStationaryGeofence()
+    }
     os_log(.debug, log: oslog, "app_terminate stationary_geofence=%@", stationaryGeofence?.identifier ?? "none")
     log("terminate", ["geofence": stationaryGeofence?.identifier ?? "none"])
   }
@@ -368,7 +370,6 @@ final class LocationEngine: NSObject {
     log("watch-clear", ["watchId": watchId, "watchCount": watchIds.count])
     if watchIds.isEmpty {
       stopWatchEngine()
-      registerStationaryGeofence()
     }
   }
 
@@ -376,7 +377,6 @@ final class LocationEngine: NSObject {
     watchIds.removeAll()
     log("stop-observing")
     stopWatchEngine()
-    registerStationaryGeofence()
   }
 
   func setMode(_ newMode: TrackingMode) {
@@ -439,7 +439,6 @@ final class LocationEngine: NSObject {
 
     if watchIds.isEmpty {
       stopWatchEngine()
-      registerStationaryGeofence()
     }
 
     os_log(.debug, log: oslog, "timebased_stop id=%d", watchId)
@@ -602,7 +601,7 @@ final class LocationEngine: NSObject {
   // MARK: - Database Access
 
   func getPendingForJs(limit: Int) -> [[String: Any]] {
-    database.getPendingForJs(limit: limit).map { $0.toDictionary() }
+    database.getPendingForJs(limit: Int32(limit)).map { $0.toDictionary() }
   }
 
   func markDelivered(ids: [String]) -> Int {
@@ -616,7 +615,7 @@ final class LocationEngine: NSObject {
   func purgeDelivered() -> Int {
     let count = database.purgeDelivered()
     log("location-purge", ["deleted": count])
-    return count
+    return Int(count)
   }
 
   func pendingCount() -> Int { database.pendingCount() }
@@ -703,11 +702,23 @@ final class LocationEngine: NSObject {
 
   private func stopWatchEngine() {
     isWatching = false
+    gpsSuspended = false
+    cancelStopTimeout()
+    timeBasedTimer?.invalidate()
+    timeBasedTimer = nil
+    timeBasedWatchId = nil
+    timeBasedBatchedLocations = []
+    removeStationaryGeofence()
     backgroundSession.stop()
     locationManager.stopUpdatingLocation()
+    locationManager.showsBackgroundLocationIndicator = false
+    if hasAlwaysAuthorization() {
+      locationManager.allowsBackgroundLocationUpdates = false
+    }
     filter.reset()
     clearWatchState()
     log("watch-stop", ["pending": database.pendingCount()])
+    devLog("info", "LocationEngine", "watch_stopped", ["pending": database.pendingCount()])
   }
 
   private func restoreWatchIfNeeded() {
@@ -790,7 +801,7 @@ final class LocationEngine: NSObject {
 
   private func makeStored(from location: CLLocation, delivered: Bool) -> StoredLocation {
     let dist = computeDistance(from: location)
-    StoredLocation(
+    return StoredLocation(
       id: UUID().uuidString,
       latitude: location.coordinate.latitude,
       longitude: location.coordinate.longitude,
@@ -946,7 +957,7 @@ final class LocationEngine: NSObject {
 
   func httpSync() -> [[String: Any]] {
     guard let url = httpUrl else { return [] }
-    let points = database.getPendingForJs(limit: httpBatchSize)
+    let points = database.getPendingForJs(limit: Int32(httpBatchSize))
     guard !points.isEmpty else { return [] }
 
     let body: String

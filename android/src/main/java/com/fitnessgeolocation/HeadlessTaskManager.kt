@@ -20,8 +20,8 @@ import java.util.concurrent.ConcurrentLinkedQueue
  * React Native handles in a fresh JS context.
  */
 object HeadlessTaskManager {
-  private const val TAG = "FitnessGeoHeadless"
-  private const val TASK_NAME = "FitnessGeolocationHeadlessTask"
+  internal const val TAG = "FitnessGeoHeadless"
+  internal const val TASK_NAME = "FitnessGeolocationHeadlessTask"
   private val eventQueue = ConcurrentLinkedQueue<HeadlessTaskEvent>()
   private var isProcessing = false
 
@@ -77,6 +77,9 @@ object HeadlessTaskManager {
  * to the JS callback registered via `AppRegistry.registerHeadlessTask`.
  */
 class FitnessHeadlessTaskService : HeadlessJsTaskService() {
+  private companion object {
+    private const val TAG = HeadlessTaskManager.TAG
+  }
   override fun getTaskConfig(intent: Intent?): HeadlessJsTaskConfig? {
     val eventName = intent?.getStringExtra("event_name") ?: return null
     val eventParams = intent?.getSerializableExtra("event_params") as? HashMap<*, *> ?: return null
@@ -98,7 +101,7 @@ class FitnessHeadlessTaskService : HeadlessJsTaskService() {
     Log.d(TAG, "headless_task: $eventName")
 
     return HeadlessJsTaskConfig(
-      TASK_NAME,
+      HeadlessTaskManager.TASK_NAME,
       params,
       0, // No timeout — task runs until promise resolves
       true // Allow task in foreground
