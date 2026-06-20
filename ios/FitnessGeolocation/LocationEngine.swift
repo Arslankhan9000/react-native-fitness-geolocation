@@ -50,6 +50,7 @@ final class LocationEngine: NSObject {
   private let locationManager = CLLocationManager()
   private let database = LocationDatabase.shared
   private let backgroundSession = BackgroundActivitySession.shared
+  private let motion = MotionEngine.shared
   private var filter = LocationFilter()
   private let oslog = OSLog(subsystem: "com.fitnessgeolocation", category: "location")
 
@@ -84,6 +85,16 @@ final class LocationEngine: NSObject {
   private var timeBasedStationarySince: Date?
   private var timeBasedBatchedLocations: [StoredLocation] = []
   private var lastTimeBasedTick: Date?
+
+  // Battery-conscious motion detection (reference: transistorsoft)
+  // Turn GPS OFF when stationary, use CoreMotion accelerometer to wake
+  private var motionAutoPauseEnabled = true
+  private var motionAutoResumeEnabled = true
+  private var gpsSuspended = false                       // GPS is off, waiting for motion
+  private var stopTimeout: TimeInterval = 5 * 60         // 5 min of stillness → GPS off
+  private var stopTimer: Timer?
+  private var stationarySince: Date?
+  private var wasMovingFlagged = false
 
   // Stationary geofence for iOS termination recovery
   private var stationaryGeofence: CLCircularRegion?
@@ -152,6 +163,108 @@ final class LocationEngine: NSObject {
       setMode(.stationary)
     } else {
       setMode(.fitness)
+    }
+  }
+
+  // MARK: - Battery-Conscious GPS Management
+
+  /// Configure motion-based GPS auto-pause/resume (reference: transistorsoft)
+  func configureMotionAutoPause(enabled: Bool, delaySeconds: Double, stopTimeoutMinutes: Double) {
+    motionAutoPauseEnabled = enabled
+    motionAutoResumeEnabled = enabled
+    stopTimeout = max(1, stopTimeoutMinutes * 60)
+    motion.autoPauseEnabled = enabled
+    motion.autoPauseDelaySeconds = delaySeconds
+  }
+
+  /// Called when MotionEngine detects the device has been stationary for autoPauseDelaySeconds
+  func onStationaryAutoPause() {
+    guard motionAutoPauseEnabled, isWatching || timeBasedWatchId != nil else { return }
+    guard !gpsSuspended else { return }
+
+    os_log(.debug, log: oslog, "motion_auto_pause: device_stationary starting_stop_timeout=%.0fs", stopTimeout)
+
+    // Start the stop timeout — if device stays still this long, kill GPS
+    startStopTimeout()
+    wasMovingFlagged = false
+  }
+
+  /// Called when MotionEngine detects movement (walking/running/cycling)
+  func onMotionResume() {
+    guard motionAutoResumeEnabled else { return }
+    cancelStopTimeout()
+    stationarySince = nil
+    wasMovingFlagged = true
+
+    if gpsSuspended {
+      // Restart GPS — motion detected
+      resumeGPS()
+    }
+  }
+
+  /// Start the stop timeout timer. After `stopTimeout` seconds of stillness, suspend GPS.
+  private func startStopTimeout() {
+    cancelStopTimeout()
+    stopTimer = Timer.scheduledTimer(withTimeInterval: stopTimeout, repeats: false) { [weak self] _ in
+      guard let self = self else { return }
+      self.stopTimer = nil
+      self.suspendGPS()
+    }
+  }
+
+  private func cancelStopTimeout() {
+    stopTimer?.invalidate()
+    stopTimer = nil
+  }
+
+  /// Suspend GPS — turn off CLLocationManager, keep CoreMotion alive for wake detection
+  private func suspendGPS() {
+    guard !gpsSuspended else { return }
+    gpsSuspended = true
+
+    locationManager.stopUpdatingLocation()
+    backgroundSession.stop()
+
+    os_log(.debug, log: oslog, "gps_suspended: motion_wake_enabled=true")
+    log("gps-suspend", ["reason": "stationary_timeout", "stopTimeout": stopTimeout])
+
+    // Register stationary geofence so iOS wakes us if device moves
+    registerStationaryGeofence()
+  }
+
+  /// Resume GPS — turn CLLocationManager back on (motion detected or app foregrounded)
+  private func resumeGPS() {
+    guard gpsSuspended else { return }
+    gpsSuspended = false
+
+    removeStationaryGeofence()
+    configureBackgroundUpdatesIfAllowed()
+    applyModeSettings()
+    backgroundSession.start()
+
+    if isWatching || timeBasedWatchId != nil {
+      locationManager.startUpdatingLocation()
+    }
+
+    os_log(.debug, log: oslog, "gps_resumed: motion_detected")
+    log("gps-resume", ["reason": "motion_detected"])
+  }
+
+  /// Feed speed from location updates into the motion state machine
+  func feedMotionSpeed(_ speed: Double) {
+    guard gpsSuspended else { return }
+    if speed > 0.5 {
+      onMotionResume()
+    }
+  }
+
+  /// Feed motion activity from bridge MotionEngine delegate for GPS suspend/resume
+  func feedMotionActivity(_ activity: MotionActivityType) {
+    switch activity {
+    case .walking, .running, .cycling, .driving:
+      onMotionResume()
+    default:
+      break
     }
   }
 

@@ -150,6 +150,15 @@ class LocationEngine private constructor(
   private var cumulativeDistance: Double = 0.0
   private var lastProcessedLocation: Location? = null
 
+  // Battery-conscious GPS management (GPS off when stationary, motion-triggered resume)
+  private var gpsSuspended = false
+  private var motionAutoPauseEnabled = true
+  private var motionAutoResumeEnabled = true
+  private var stopTimeoutMs: Long = 5 * 60 * 1000  // 5 min
+  private var stationarySinceMs: Long = 0L
+  private var stopTimerRunnable: Runnable? = null
+  private val mainHandler = android.os.Handler(Looper.getMainLooper())
+
   private val prefs by lazy {
     context.getSharedPreferences("fitness_geolocation", Context.MODE_PRIVATE)
   }
@@ -502,7 +511,7 @@ class LocationEngine private constructor(
         lastLocation = filtered.location
 
         val dist = computeDistance(filtered.location)
-        val stored = filtered.location.toStored(delivered = false).copy(
+        val stored = filtered.location.toStored(delivered = false).withRouteMetrics(
           distanceFromPrev = dist,
           cumulativeDistance = cumulativeDistance,
         )
@@ -639,7 +648,7 @@ class LocationEngine private constructor(
         lastLocation = filtered.location
         val dist = computeDistance(filtered.location)
         val deliverLive = isAppActive() && watchIds.isNotEmpty()
-        val stored = filtered.location.toStored(delivered = false).copy(
+        val stored = filtered.location.toStored(delivered = false).withRouteMetrics(
           distanceFromPrev = dist,
           cumulativeDistance = cumulativeDistance,
         )
@@ -678,6 +687,113 @@ class LocationEngine private constructor(
     if (dist > 0) cumulativeDistance += dist
     lastProcessedLocation = loc
     return dist
+  }
+
+  // ─── Battery-Conscious GPS Management ──────────────────────────────────────
+
+  /** Configure motion-based GPS auto-pause/resume (reference: transistorsoft) */
+  fun configureMotionAutoPause(enabled: Boolean, delaySeconds: Long, stopTimeoutMinutes: Long) {
+    motionAutoPauseEnabled = enabled
+    motionAutoResumeEnabled = enabled
+    stopTimeoutMs = stopTimeoutMinutes.coerceAtLeast(1) * 60 * 1000
+  }
+
+  /** Feed a motion activity change from MotionEngine for GPS suspend/resume */
+  fun feedMotionActivity(activity: String) {
+    if (MotionEngine.isMovingActivity(activity)) {
+      resumeGps()
+    }
+  }
+
+  /** Called when speed data suggests the device is stationary for a while */
+  fun onStationaryAutoPause() {
+    if (!motionAutoPauseEnabled || (!isWatching && timeBasedWatchId == null)) return
+    if (gpsSuspended) return
+
+    Log.d(TAG, "motion_auto_pause: starting_stop_timeout=${stopTimeoutMs}ms")
+    startStopTimeout()
+  }
+
+  /** Called when motion is detected — resume GPS immediately */
+  fun onMotionResume() {
+    if (!motionAutoResumeEnabled) return
+    cancelStopTimeout()
+    stationarySinceMs = 0L
+
+    if (gpsSuspended) {
+      resumeGps()
+    }
+  }
+
+  private fun startStopTimeout() {
+    cancelStopTimeout()
+    val r = Runnable {
+      stopTimerRunnable = null
+      suspendGps()
+    }
+    stopTimerRunnable = r
+    mainHandler.postDelayed(r, stopTimeoutMs)
+  }
+
+  private fun cancelStopTimeout() {
+    stopTimerRunnable?.let { mainHandler.removeCallbacks(it) }
+    stopTimerRunnable = null
+  }
+
+  @SuppressLint("MissingPermission")
+  private fun suspendGps() {
+    if (gpsSuspended) return
+    gpsSuspended = true
+
+    callback?.let { fusedClient.removeLocationUpdates(it) }
+    callback = null
+
+    Log.d(TAG, "gps_suspended: motion_wake_enabled=true")
+    log("gps-suspend", mapOf("reason" to "stationary_timeout", "stopTimeoutMs" to stopTimeoutMs))
+  }
+
+  @SuppressLint("MissingPermission")
+  private fun resumeGps() {
+    if (!gpsSuspended) return
+    gpsSuspended = false
+
+    if (isWatching || timeBasedWatchId != null) {
+      restartUpdatesInternal()
+    }
+
+    Log.d(TAG, "gps_resumed: motion_detected")
+    log("gps-resume", mapOf("reason" to "motion_detected"))
+  }
+
+  /** Restart location updates without clearing watch state */
+  @SuppressLint("MissingPermission")
+  private fun restartUpdatesInternal() {
+    // Simplified restart — used when resuming from GPS suspend
+    val priority = if (highAccuracy) mode.priority else Priority.PRIORITY_BALANCED_POWER_ACCURACY
+    val request = LocationRequest.Builder(priority, intervalMs)
+      .setMinUpdateIntervalMillis(fastestIntervalMs)
+      .setMinUpdateDistanceMeters(distanceMeters)
+      .build()
+
+    val cb = object : LocationCallback() {
+      override fun onLocationResult(result: LocationResult) {
+        if (isPaused) return
+        val loc = result.lastLocation ?: return
+        processLocation(loc)
+      }
+    }
+    callback = cb
+    try {
+      fusedClient.requestLocationUpdates(request, cb, Looper.getMainLooper())
+    } catch (_: SecurityException) {}
+  }
+
+  /** Feed speed for GPS resume detection (used from LocationFilter processing) */
+  fun feedSpeedForGpsResume(speed: Float) {
+    if (!gpsSuspended) return
+    if (speed > 0.5f) {
+      onMotionResume()
+    }
   }
 
   // ─── Odometer ──────────────────────────────────────────────────────────────
@@ -1011,17 +1127,11 @@ class LocationEngine private constructor(
     ) == PackageManager.PERMISSION_GRANTED
   }
 
-  private fun StoredLocation.copy(
+  private fun StoredLocation.withRouteMetrics(
     distanceFromPrev: Double = this.distanceFromPrev,
     cumulativeDistance: Double = this.cumulativeDistance,
   ): StoredLocation {
-    return StoredLocation(
-      id = id, latitude = latitude, longitude = longitude,
-      accuracy = accuracy, speed = speed, heading = heading,
-      altitude = altitude, timestamp = timestamp,
-      sessionId = sessionId, deliveredToJs = deliveredToJs,
-      motionState = motionState, signalStrength = signalStrength,
-      batteryLevel = batteryLevel,
+    return copy(
       distanceFromPrev = distanceFromPrev,
       cumulativeDistance = cumulativeDistance,
     )

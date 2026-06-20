@@ -317,13 +317,13 @@ export class ActivityManager {
   pause(options?: { reason?: 'manual' | 'stationary' }): boolean {
     if (this._state !== 'tracking' || this._isPaused) return false;
 
+    // Add the active time since last resume/start
+    this._activeMs += Date.now() - this._pauseStartTime;
+
     this._isPaused = true;
     this._pauseStartTime = Date.now();
     this._pauseCount++;
     this.cancelAutoPauseTimer();
-
-    // Update active tracking time
-    this._activeMs += this._pauseStartTime - this._pauseStartTime;
 
     // Pause the native tracker
     this.tracker.pause();
@@ -349,7 +349,9 @@ export class ActivityManager {
   resume(options?: { reason?: 'manual' | 'movement' }): boolean {
     if (this._state !== 'tracking' || !this._isPaused) return false;
 
+    // Add the paused duration since pause was called
     this._totalPausedMs += Date.now() - this._pauseStartTime;
+    this._pauseStartTime = Date.now();
     this._isPaused = false;
 
     // Resume the native tracker
@@ -389,8 +391,6 @@ export class ActivityManager {
 
     // Calculate final metrics
     this._elapsedMs = Date.now() - this._startTime;
-    const activeDuration = this._activeMs + (this._isPaused ? 0 : (Date.now() - (this._isPaused ? this._pauseStartTime : this._pauseStartTime)));
-    // Fix the active duration calculation
     const correctActiveMs = this._elapsedMs - this._totalPausedMs;
 
     // Finalize session in native SQLite

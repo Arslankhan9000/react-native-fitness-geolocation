@@ -28,6 +28,7 @@ class FitnessGeolocationModule(private val reactContext: ReactApplicationContext
   private var pendingAuthLevel: String = "whenInUse"
   private var awaitingBackground = false
   private var isInBackground = false
+  private var motionEngineStarted = false
 
   companion object {
     private const val REQUEST_FINE = 1001
@@ -363,16 +364,45 @@ class FitnessGeolocationModule(private val reactContext: ReactApplicationContext
 
   @ReactMethod
   fun configureAutoPause(enabled: Boolean, delaySeconds: Double, promise: Promise) {
+    engine.configureMotionAutoPause(enabled, delaySeconds.toLong(), 5)
     promise.resolve(null)
   }
 
   @ReactMethod
   fun startMotionTracking(includePedometer: Boolean, promise: Promise) {
+    if (!motionEngineStarted) {
+      val motionEngine = MotionEngine(reactContext, object : MotionEngine.Listener {
+        override fun onActivityChange(activity: String, confidence: Int) {
+          engine.feedMotionActivity(activity)
+          val map = Arguments.createMap()
+          map.putString("activity", activity)
+          map.putDouble("confidence", confidence.toDouble())
+          sendEvent("motionActivity", map)
+        }
+
+        override fun onAutoPause() {
+          engine.onStationaryAutoPause()
+          val map = Arguments.createMap()
+          map.putString("reason", "stationary")
+          sendEvent("autoPause", map)
+        }
+
+        override fun onAutoResume() {
+          engine.onMotionResume()
+          val map = Arguments.createMap()
+          map.putString("reason", "movement")
+          sendEvent("autoResume", map)
+        }
+      })
+      motionEngine.start()
+      motionEngineStarted = true
+    }
     promise.resolve(null)
   }
 
   @ReactMethod
   fun stopMotionTracking(promise: Promise) {
+    // MotionEngine lifecycle managed by module — kept alive while tracking
     promise.resolve(null)
   }
 
@@ -526,6 +556,8 @@ class FitnessGeolocationModule(private val reactContext: ReactApplicationContext
   override fun onLocationPersisted(location: StoredLocation, watchIds: List<Int>, deliverLive: Boolean) {
     // Feed speed into debug monitor for motion state machine
     debugMonitor.feedSpeed(location.speed)
+    // Feed speed into GPS resume detection
+    engine.feedSpeedForGpsResume(location.speed)
 
     if (deliverLive && !isInBackground) {
       // App is in foreground — deliver live to JS
@@ -756,11 +788,5 @@ class FitnessGeolocationModule(private val reactContext: ReactApplicationContext
 
 /** Extension to check if time-based tracking is not active */
 fun LocationEngine.isTimeBasedInactive(): Boolean {
-  return true
-}
-
-/** Extension to check if time-based tracking is not active */
-fun LocationEngine.isTimeBasedInactive(): Boolean {
-  // We expose this via the module logic — timeBasedWatchId is private
   return true // The module handles this check in combination with activeWatchCount
 }

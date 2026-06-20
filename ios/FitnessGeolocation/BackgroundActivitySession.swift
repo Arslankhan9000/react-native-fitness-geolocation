@@ -1,10 +1,6 @@
 import Foundation
 import CoreLocation
 
-#if canImport(_LocationEssentials)
-import _LocationEssentials
-#endif
-
 /// iOS 17+ CLBackgroundActivitySession — keeps location pipeline alive in background (Apple recommended)
 final class BackgroundActivitySession {
   static let shared = BackgroundActivitySession()

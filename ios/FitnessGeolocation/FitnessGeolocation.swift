@@ -468,6 +468,8 @@ class FitnessGeolocation: RCTEventEmitter, LocationEngineDelegate, MotionEngineD
 
   func motionEngine(_ engine: MotionEngine, didUpdate activity: MotionActivityType, confidence: Double) {
     LocationEngine.shared.setMotionState(activity.rawValue)
+    // Feed into battery-conscious GPS suspend/resume
+    LocationEngine.shared.feedMotionActivity(activity)
     debugMonitor.feedActivity(activity.rawValue, confidence: confidence)
     guard hasListeners else { return }
     sendEvent(withName: "motionActivity", body: [
@@ -482,12 +484,18 @@ class FitnessGeolocation: RCTEventEmitter, LocationEngineDelegate, MotionEngineD
   }
 
   func motionEngine(_ engine: MotionEngine, autoPauseTriggered: Bool) {
-    guard hasListeners, autoPauseTriggered else { return }
+    guard autoPauseTriggered else { return }
+    // Feed into battery-conscious GPS suspend/resume
+    LocationEngine.shared.onStationaryAutoPause()
+    guard hasListeners else { return }
     sendEvent(withName: "autoPause", body: ["reason": "stationary"])
   }
 
   func motionEngine(_ engine: MotionEngine, autoResumeTriggered: Bool) {
-    guard hasListeners, autoResumeTriggered else { return }
+    guard autoResumeTriggered else { return }
+    // Feed into battery-conscious GPS suspend/resume
+    LocationEngine.shared.onMotionResume()
+    guard hasListeners else { return }
     sendEvent(withName: "autoResume", body: ["reason": "movement"])
   }
 }
