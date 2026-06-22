@@ -501,4 +501,75 @@ class FitnessGeolocation: RCTEventEmitter, LocationEngineDelegate, MotionEngineD
     guard hasListeners else { return }
     sendEvent(withName: "autoResume", body: ["reason": "movement"])
   }
+
+  // MARK: - Live Activities
+
+  @objc(setLiveActivityEnabled:)
+  func setLiveActivityEnabled(_ enabled: Bool) {
+    if #available(iOS 16.1, *) {
+      LiveActivityManager.shared.setEnabled(enabled)
+    }
+  }
+
+  @objc(getLiveActivityEnabled:rejecter:)
+  func getLiveActivityEnabled(_ resolve: @escaping RCTPromiseResolveBlock,
+                               rejecter reject: @escaping RCTPromiseRejectBlock) {
+    if #available(iOS 16.1, *) {
+      resolve(LiveActivityManager.shared.isUserEnabled)
+    } else {
+      resolve(false)
+    }
+  }
+
+  @objc(startLiveActivity:activityType:resolver:rejecter:)
+  func startLiveActivity(_ name: String, activityType: String,
+                         resolver resolve: @escaping RCTPromiseResolveBlock,
+                         rejecter reject: @escaping RCTPromiseRejectBlock) {
+    guard #available(iOS 16.1, *) else { return resolve(nil) }
+    Task { @MainActor in
+      do {
+        try await LiveActivityManager.shared.startActivity(
+          workoutName: name,
+          activityType: activityType
+        )
+        resolve(nil)
+      } catch {
+        reject("LIVE_ACTIVITY_ERROR", error.localizedDescription, error)
+      }
+    }
+  }
+
+  @objc(updateLiveActivity:duration:pace:speed:calories:gpsStatus:isPaused:)
+  func updateLiveActivity(_ distance: NSNumber, duration: NSNumber, pace: String,
+                          speed: NSNumber, calories: NSNumber,
+                          gpsStatus: String, isPaused: Bool) {
+    guard #available(iOS 16.1, *) else { return }
+    Task { @MainActor in
+      await LiveActivityManager.shared.updateActivity(
+        distance: distance.doubleValue,
+        duration: duration.doubleValue,
+        pace: pace,
+        speed: speed.doubleValue,
+        calories: calories.intValue,
+        heartRate: nil,
+        gpsStatus: gpsStatus,
+        isPaused: isPaused
+      )
+    }
+  }
+
+  @objc(endLiveActivity:duration:calories:resolver:rejecter:)
+  func endLiveActivity(_ distance: NSNumber, duration: NSNumber, calories: NSNumber,
+                       resolver resolve: @escaping RCTPromiseResolveBlock,
+                       rejecter reject: @escaping RCTPromiseRejectBlock) {
+    guard #available(iOS 16.1, *) else { return resolve(nil) }
+    Task { @MainActor in
+      try? await LiveActivityManager.shared.endActivity(
+        finalDistance: distance.doubleValue,
+        finalDuration: duration.doubleValue,
+        finalCalories: calories.intValue
+      )
+      resolve(nil)
+    }
+  }
 }

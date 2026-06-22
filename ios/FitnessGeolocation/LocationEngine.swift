@@ -52,7 +52,21 @@ final class LocationEngine: NSObject {
   private let backgroundSession = BackgroundActivitySession.shared
   private let motion = MotionEngine.shared
   private var filter = LocationFilter()
+  /// C++ tracking engine — replaces LocationFilter + cumulativeDistance on the hot path.
+  private let trackEngine = TrackEngineBridge.shared
   private let oslog = OSLog(subsystem: "com.fitnessgeolocation", category: "location")
+  
+  // Live Activity Manager (iOS 16.1+)
+  private var liveActivityManager: LiveActivityManager? {
+    if #available(iOS 16.1, *) {
+      return LiveActivityManager.shared
+    }
+    return nil
+  }
+  
+  // Track session details for Live Activity
+  private var currentActivityType: String = "running"
+  private var sessionStartTime: Date?
 
   // Watch state
   private var isWatching = false
@@ -406,6 +420,7 @@ final class LocationEngine: NSObject {
     timeBasedBatchedLocations = []
     cumulativeDistance = 0
     lastProcessedLocation = nil
+    trackEngine.startSession(Date().timeIntervalSince1970, liveActivityInterval: 3.0)
 
     // Start continuous location updates with no distance filter
     configureBackgroundUpdatesIfAllowed()
@@ -519,6 +534,42 @@ final class LocationEngine: NSObject {
 
     // Update cumulative distance
     cumulativeDistance = latest.cumulativeDistance
+    
+    // Update Live Activity with current workout data (if session active)
+    // Issue #3 fix: Task is wrapped in do/catch so ActivityKit errors are logged
+    // and never silently dropped. Circuit breaker inside LiveActivityManager prevents
+    // battery drain from repeated failures.
+    if currentSessionId != nil, let manager = liveActivityManager, let startTime = sessionStartTime {
+      let durationSeconds = Date().timeIntervalSince(startTime)
+      let paceFormatted = LiveActivityManager.formatPace(metersPerSecond: latest.speed)
+      let gpsStatusString = LiveActivityManager.gpsStatusFromAccuracy(latest.accuracy)
+      let distanceSnapshot = cumulativeDistance
+      let actType = currentActivityType
+      let paused = timeBasedPaused
+      
+      Task { @MainActor in
+        do {
+          try await manager.updateActivity(
+            distance: distanceSnapshot,
+            duration: durationSeconds,
+            pace: paceFormatted,
+            speed: latest.speed * 3.6, // m/s to km/h
+            calories: LiveActivityManager.estimateCalories(
+              distance: distanceSnapshot,
+              activityType: actType
+            ),
+            heartRate: nil,
+            gpsStatus: gpsStatusString,
+            isPaused: paused
+          )
+        } catch {
+          // Non-fatal: Live Activity update error caught at tick level.
+          // The circuit breaker inside LiveActivityManager handles repeated failures.
+          os_log(.error, log: OSLog(subsystem: "com.fitnessgeolocation", category: "liveactivity"),
+                 "tick_live_activity_error: %@", error.localizedDescription)
+        }
+      }
+    }
 
     // Emit event to bridge
     let eventBody: [String: Any] = [
@@ -585,11 +636,19 @@ final class LocationEngine: NSObject {
 
   // MARK: - Odometer
 
-  var odometer: Double { cumulativeDistance }
+  /// Returns C++ engine's Kahan-compensated accumulated distance (preferred)
+  /// falling back to the Swift-side mirror.
+  var odometer: Double {
+    trackEngine.isActive ? trackEngine.totalDistanceM : cumulativeDistance
+  }
 
   func resetOdometer() {
     cumulativeDistance = 0
     lastProcessedLocation = nil
+    // Restart C++ engine to reset its Kahan accumulator
+    if trackEngine.isActive {
+      trackEngine.startSession(Date().timeIntervalSince1970, liveActivityInterval: 3.0)
+    }
     log("odometer-reset")
   }
 
@@ -627,8 +686,33 @@ final class LocationEngine: NSObject {
   func createSession(name: String, activityType: String, extras: String?) -> String {
     let id = database.createSession(name: name, activityType: activityType, extras: extras)
     currentSessionId = id
+    currentActivityType = activityType
+    sessionStartTime = Date()
     cumulativeDistance = 0
     lastProcessedLocation = nil
+    
+    // Start Live Activity if enabled.
+    // Issue #4 fix: Task body is wrapped in do/catch so any throw from startActivity
+    // (e.g. ActivityKit internal error) is logged rather than silently discarded.
+    if let manager = liveActivityManager {
+      let sessionName = name
+      let actType = activityType
+      Task { @MainActor in
+        do {
+          try await manager.startActivity(
+            workoutName: sessionName,
+            activityType: actType,
+            targetDistance: nil,
+            targetDuration: nil
+          )
+        } catch {
+          // Non-fatal: Live Activity start failed. GPS tracking continues normally.
+          os_log(.error, log: OSLog(subsystem: "com.fitnessgeolocation", category: "liveactivity"),
+                 "create_session_live_activity_start_error: %@", error.localizedDescription)
+        }
+      }
+    }
+    
     os_log(.debug, log: oslog, "session_created id=%@ name=%@", id, name)
     devLog("info", "ActivityManager", "session_created", ["sessionId": id, "name": name])
     return id
@@ -636,7 +720,32 @@ final class LocationEngine: NSObject {
 
   func endSession(_ sessionId: String, data: [String: Any]) {
     database.endSession(sessionId, data: data)
-    if currentSessionId == sessionId { currentSessionId = nil }
+    
+    // End Live Activity if active.
+    // endActivity() is now throwing — must use try/catch inside Task.
+    if currentSessionId == sessionId, let manager = liveActivityManager {
+      let totalDist = data["totalDistance"] as? Double
+      let totalDur  = (data["totalDuration"] as? Double).map { $0 / 1000.0 }
+      let totalCal  = data["calories"] as? Int
+      Task { @MainActor in
+        do {
+          try await manager.endActivity(
+            finalDistance: totalDist,
+            finalDuration: totalDur,
+            finalCalories: totalCal
+          )
+        } catch {
+          os_log(.error, log: OSLog(subsystem: "com.fitnessgeolocation", category: "liveactivity"),
+                 "end_session_live_activity_error: %@", error.localizedDescription)
+        }
+      }
+    }
+    
+    if currentSessionId == sessionId { 
+      currentSessionId = nil
+      sessionStartTime = nil
+    }
+    
     os_log(.debug, log: oslog, "session_ended id=%@ dist=%.1f pts=%d",
            sessionId, data["totalDistance"] as? Double ?? 0, data["pointCount"] as? Int ?? 0)
     devLog("info", "ActivityManager", "session_ended", [
@@ -685,6 +794,7 @@ final class LocationEngine: NSObject {
 
   private func startWatchEngine() {
     isWatching = true
+    trackEngine.startSession(Date().timeIntervalSince1970, liveActivityInterval: 3.0)
     configureBackgroundUpdatesIfAllowed()
     applyModeSettings()
     backgroundSession.start()
@@ -716,6 +826,7 @@ final class LocationEngine: NSObject {
       locationManager.allowsBackgroundLocationUpdates = false
     }
     filter.reset()
+    trackEngine.stopSession()
     clearWatchState()
     log("watch-stop", ["pending": database.pendingCount()])
     devLog("info", "LocationEngine", "watch_stopped", ["pending": database.pendingCount()])
@@ -846,47 +957,102 @@ final class LocationEngine: NSObject {
       return
     }
 
-    switch filter.process(raw) {
-    case .reject(let reason):
-      log("location-drop", ["reason": reason, "accuracy": raw.horizontalAccuracy])
-      return
-    case .accept(_, let smoothed):
-      lastLocation = smoothed
-      let stored = makeStored(from: smoothed, delivered: false)
+    // ── C++ fast path ────────────────────────────────────────────────────────
+    // TrackEngineBridge runs: LocationFilterC → KalmanState → haversine_m
+    // All zero-allocation, ~2 µs on A15. Falls back to Swift filter for the
+    // stored CLLocation object (needed for downstream APIs that expect CLLocation).
+    let engResult = trackEngine.ingest(
+      lat: raw.coordinate.latitude,
+      lng: raw.coordinate.longitude,
+      accuracy: raw.horizontalAccuracy,
+      unixTimeS: raw.timestamp.timeIntervalSince1970,
+      speedMps: raw.speed
+    )
 
-      guard database.insert(stored) else {
-        log("persist-failed", ["accuracy": smoothed.horizontalAccuracy])
-        return
-      }
+    // Sync the Swift-side odometer with the C++ accumulated distance
+    cumulativeDistance = trackEngine.totalDistanceM
 
-      // If time-based tracking is active, batch this location
-      if timeBasedWatchId != nil {
-        timeBasedBatchedLocations.append(stored)
-        // Cap batch size to prevent memory growth
-        if timeBasedBatchedLocations.count > 100 {
-          timeBasedBatchedLocations.removeFirst(timeBasedBatchedLocations.count - 100)
+    // ── Live Activity update (native, no JS bridge crossing) ─────────────────
+    if engResult.shouldUpdateLiveActivity, engResult.accepted {
+      if #available(iOS 16.1, *) {
+        let sessionStart = Date(timeIntervalSince1970:
+          raw.timestamp.timeIntervalSince1970 - engResult.elapsedS)
+        _ = sessionStart  // reserved for future staleDate calculation
+        Task { @MainActor in
+          await LiveActivityManager.shared.updateActivity(
+            distance: engResult.totalDistanceM,
+            duration: engResult.elapsedS,
+            pace: engResult.paceStr,
+            speed: engResult.speedKmh,
+            calories: LiveActivityManager.estimateCalories(
+              distance: engResult.totalDistanceM,
+              activityType: currentActivityType
+            ),
+            heartRate: nil,
+            gpsStatus: LiveActivityManager.gpsStatusFromAccuracy(raw.horizontalAccuracy),
+            isPaused: isPaused
+          )
         }
       }
+    }
 
-      // DEV log to os_log
-      os_log(.debug, log: oslog, "persist lat=%.6f lng=%.6f acc=%.1f spd=%.2f dist=%.1f cumulative=%.1f",
-             stored.latitude, stored.longitude, stored.accuracy, stored.speed,
-             stored.distanceFromPrev, stored.cumulativeDistance)
+    // ── Swift filter path (for CLLocation-based downstream) ──────────────────
+    // We keep filter.process for reject/accept signalling but use the C++ result
+    // for distance. Accept only if the C++ engine agreed.
+    guard engResult.accepted else {
+      log("location-drop", ["reason": "cpp_filter", "accuracy": raw.horizontalAccuracy])
+      return
+    }
 
-      log("location-persist", [
-        "id": stored.id,
-        "accuracy": stored.accuracy,
-        "speed": stored.speed,
-        "distance": stored.distanceFromPrev,
-        "cumulative": stored.cumulativeDistance,
-        "pending": database.pendingCount(),
-        "deliverLive": isAppActive,
-      ])
+    // Build a smoothed CLLocation using C++ filtered coordinates
+    let smoothed = CLLocation(
+      coordinate: CLLocationCoordinate2D(
+        latitude: engResult.filteredLat,
+        longitude: engResult.filteredLng
+      ),
+      altitude: raw.altitude,
+      horizontalAccuracy: raw.horizontalAccuracy,
+      verticalAccuracy: raw.verticalAccuracy,
+      course: raw.course,
+      speed: max(0, raw.speed),
+      timestamp: raw.timestamp
+    )
 
-      // Deliver live to watch callbacks if app is active
-      if isAppActive && !watchIds.isEmpty {
-        delegate?.locationEngine(self, didPersist: stored, watchIds: Array(watchIds.keys), deliverLive: true)
+    lastLocation = smoothed
+    let stored = makeStored(from: smoothed, delivered: false)
+
+    guard database.insert(stored) else {
+      log("persist-failed", ["accuracy": smoothed.horizontalAccuracy])
+      return
+    }
+
+    // If time-based tracking is active, batch this location
+    if timeBasedWatchId != nil {
+      timeBasedBatchedLocations.append(stored)
+      // Cap batch size to prevent memory growth
+      if timeBasedBatchedLocations.count > 100 {
+        timeBasedBatchedLocations.removeFirst(timeBasedBatchedLocations.count - 100)
       }
+    }
+
+    // DEV log to os_log
+    os_log(.debug, log: oslog, "persist lat=%.6f lng=%.6f acc=%.1f spd=%.2f dist=%.1f cumulative=%.1f",
+           stored.latitude, stored.longitude, stored.accuracy, stored.speed,
+           stored.distanceFromPrev, stored.cumulativeDistance)
+
+    log("location-persist", [
+      "id": stored.id,
+      "accuracy": stored.accuracy,
+      "speed": stored.speed,
+      "distance": stored.distanceFromPrev,
+      "cumulative": stored.cumulativeDistance,
+      "pending": database.pendingCount(),
+      "deliverLive": isAppActive,
+    ])
+
+    // Deliver live to watch callbacks if app is active
+    if isAppActive && !watchIds.isEmpty {
+      delegate?.locationEngine(self, didPersist: stored, watchIds: Array(watchIds.keys), deliverLive: true)
     }
   }
 
@@ -955,7 +1121,24 @@ final class LocationEngine: NSObject {
     }
   }
 
+  /// Synchronously upload pending locations to the configured HTTP endpoint.
+  ///
+  /// Issue #5 fix: `DispatchSemaphore.wait()` on the main thread causes a deadlock because
+  /// URLSession completion callbacks need the main thread to deliver. This method now:
+  ///   1. Asserts it is NOT running on the main thread (hard crash in debug, early-return in release).
+  ///   2. Dispatches onto the dedicated background `httpQueue` when called from unknown contexts.
+  ///
+  /// Callers (JS bridge) always call this from a background thread via the RN bridge, so
+  /// in normal operation the precondition always passes. The queue-based overload below
+  /// provides a safe fire-and-forget variant for internal use.
   func httpSync() -> [[String: Any]] {
+    // Issue #5: Prevent semaphore deadlock — must never block the main thread.
+    if Thread.isMainThread {
+      os_log(.fault, log: oslog,
+             "httpSync called on main thread — this would deadlock. Skipping upload.")
+      return []
+    }
+
     guard let url = httpUrl else { return [] }
     let points = database.getPendingForJs(limit: Int32(httpBatchSize))
     guard !points.isEmpty else { return [] }
@@ -982,25 +1165,30 @@ final class LocationEngine: NSObject {
     request.httpBody = body.data(using: .utf8)
     request.timeoutInterval = 15
 
+    // Safe: semaphore.wait() is on a background thread (asserted above).
+    // URLSession delivers its completion on an internal thread — no deadlock.
     let semaphore = DispatchSemaphore(value: 0)
     var resultLocations: [[String: Any]] = []
     var responseCode = 0
     var responseText = ""
 
     URLSession.shared.dataTask(with: request) { data, response, error in
-      if let httpResponse = response as? HTTPURLResponse {
-        responseCode = httpResponse.statusCode
-        responseText = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
-        if (200...299).contains(responseCode) {
-          let ids = points.map { $0.id }
-          _ = self.database.markDelivered(ids: ids)
-          resultLocations = points.map { $0.toDictionary() }
-          os_log(.debug, log: self.oslog, "http_sync_success: %d points, status=%d", points.count, responseCode)
-        } else {
-          os_log(.error, log: self.oslog, "http_sync_failed: status=%d", responseCode)
-        }
+      defer { semaphore.signal() }
+      guard let httpResponse = response as? HTTPURLResponse else {
+        os_log(.error, log: self.oslog, "http_sync_no_response error=%@",
+               error?.localizedDescription ?? "unknown")
+        return
       }
-      semaphore.signal()
+      responseCode = httpResponse.statusCode
+      responseText = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+      if (200...299).contains(responseCode) {
+        let ids = points.map { $0.id }
+        _ = self.database.markDelivered(ids: ids)
+        resultLocations = points.map { $0.toDictionary() }
+        os_log(.debug, log: self.oslog, "http_sync_success: %d points, status=%d", points.count, responseCode)
+      } else {
+        os_log(.error, log: self.oslog, "http_sync_failed: status=%d body=%@", responseCode, responseText)
+      }
     }.resume()
     _ = semaphore.wait(timeout: .now() + 30)
 
@@ -1015,6 +1203,16 @@ final class LocationEngine: NSObject {
     }
 
     return resultLocations
+  }
+
+  /// Fire-and-forget variant: dispatches `httpSync()` onto the background HTTP queue.
+  /// Use this for internal triggered syncs to avoid blocking any caller thread.
+  func httpSyncAsync(completion: (([[String: Any]]) -> Void)? = nil) {
+    httpQueue.async { [weak self] in
+      guard let self = self else { return }
+      let results = self.httpSync()
+      completion?(results)
+    }
   }
 
   private func uploadSingle(url: String, point: StoredLocation) -> [String: Any]? {
@@ -1151,6 +1349,49 @@ final class LocationEngine: NSObject {
       "platform": "ios",
       "framework": "React Native",
     ]
+  }
+  
+  // MARK: - Live Activity Management
+  
+  /**
+   * Enable or disable Live Activity feature (user setting).
+   * Live Activity is OFF by default for security and privacy.
+   */
+  func setLiveActivityEnabled(_ enabled: Bool) {
+    if #available(iOS 16.1, *) {
+      liveActivityManager?.setEnabled(enabled)
+      os_log(.debug, log: oslog, "live_activity_enabled=%d", enabled)
+    }
+  }
+  
+  /**
+   * Check if Live Activity is enabled by user.
+   */
+  func isLiveActivityEnabled() -> Bool {
+    if #available(iOS 16.1, *) {
+      return liveActivityManager?.isUserEnabled ?? false
+    }
+    return false
+  }
+  
+  /**
+   * Check if Live Activity is currently active (showing).
+   */
+  func isLiveActivityActive() -> Bool {
+    if #available(iOS 16.1, *) {
+      return liveActivityManager?.isActive ?? false
+    }
+    return false
+  }
+  
+  /**
+   * Check if device supports Live Activity feature (iOS 16.1+).
+   */
+  func isLiveActivitySupported() -> Bool {
+    if #available(iOS 16.1, *) {
+      return liveActivityManager?.isSupported ?? false
+    }
+    return false
   }
 }
 

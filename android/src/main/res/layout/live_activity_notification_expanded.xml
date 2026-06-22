@@ -1,0 +1,223 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Live Activity Notification - Expanded View
+  Full view shown when notification is expanded.
+  Matches iOS Live Activity design with all workout metrics.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <!-- Header Row -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginBottom="12dp">
+
+        <!-- Activity Icon -->
+        <ImageView
+            android:id="@+id/activity_icon"
+            android:layout_width="28dp"
+            android:layout_height="28dp"
+            android:src="@android:drawable/ic_menu_compass"
+            android:contentDescription="Activity type icon"
+            android:layout_marginEnd="8dp" />
+
+        <!-- Workout Name -->
+        <TextView
+            android:id="@+id/workout_name"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Morning Run"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:textColor="?android:attr/textColorPrimary"
+            android:maxLines="1"
+            android:ellipsize="end" />
+
+        <!-- GPS Status Indicator -->
+        <ImageView
+            android:id="@+id/gps_status_indicator"
+            android:layout_width="20dp"
+            android:layout_height="20dp"
+            android:src="@android:drawable/presence_online"
+            android:contentDescription="GPS signal strength"
+            android:layout_marginStart="8dp" />
+
+    </LinearLayout>
+
+    <!-- Main Stats Grid -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:weightSum="3"
+        android:layout_marginBottom="12dp">
+
+        <!-- Distance -->
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:gravity="start">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="DISTANCE"
+                android:textSize="10sp"
+                android:textColor="?android:attr/textColorSecondary"
+                android:letterSpacing="0.05" />
+
+            <TextView
+                android:id="@+id/distance_value"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="0.00 km"
+                android:textSize="20sp"
+                android:textStyle="bold"
+                android:textColor="?android:attr/textColorPrimary"
+                android:layout_marginTop="2dp" />
+
+        </LinearLayout>
+
+        <!-- Duration -->
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:gravity="center">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="TIME"
+                android:textSize="10sp"
+                android:textColor="?android:attr/textColorSecondary"
+                android:letterSpacing="0.05" />
+
+            <TextView
+                android:id="@+id/duration_value"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="0:00"
+                android:textSize="20sp"
+                android:textStyle="bold"
+                android:textColor="?android:attr/textColorPrimary"
+                android:layout_marginTop="2dp" />
+
+        </LinearLayout>
+
+        <!-- Pace -->
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:gravity="end">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="PACE"
+                android:textSize="10sp"
+                android:textColor="?android:attr/textColorSecondary"
+                android:letterSpacing="0.05" />
+
+            <TextView
+                android:id="@+id/pace_value"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="--:--"
+                android:textSize="18sp"
+                android:textStyle="bold"
+                android:textColor="?android:attr/textColorPrimary"
+                android:layout_marginTop="2dp" />
+
+        </LinearLayout>
+
+    </LinearLayout>
+
+    <!-- Secondary Stats Row -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical">
+
+        <!-- Calories -->
+        <ImageView
+            android:layout_width="14dp"
+            android:layout_height="14dp"
+            android:src="@android:drawable/star_on"
+            android:contentDescription="Calories icon"
+            android:layout_marginEnd="4dp" />
+
+        <TextView
+            android:id="@+id/calories_value"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="0 cal"
+            android:textSize="12sp"
+            android:textColor="?android:attr/textColorSecondary" />
+
+        <View
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
+
+        <!-- Heart Rate (optional) -->
+        <ImageView
+            android:layout_width="14dp"
+            android:layout_height="14dp"
+            android:src="@android:drawable/ic_dialog_info"
+            android:contentDescription="Heart rate icon"
+            android:layout_marginEnd="4dp" />
+
+        <TextView
+            android:id="@+id/heart_rate_value"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="-- bpm"
+            android:textSize="12sp"
+            android:textColor="?android:attr/textColorSecondary" />
+
+    </LinearLayout>
+
+    <!-- Pause Indicator (shown when paused) -->
+    <LinearLayout
+        android:id="@+id/pause_indicator"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center"
+        android:layout_marginTop="8dp"
+        android:padding="6dp"
+        android:background="@android:color/darker_gray"
+        android:visibility="gone">
+
+        <ImageView
+            android:layout_width="16dp"
+            android:layout_height="16dp"
+            android:src="@android:drawable/ic_media_pause"
+            android:contentDescription="Paused icon"
+            android:layout_marginEnd="6dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Paused"
+            android:textSize="12sp"
+            android:textStyle="bold"
+            android:textColor="@android:color/holo_orange_light" />
+
+    </LinearLayout>
+
+</LinearLayout>

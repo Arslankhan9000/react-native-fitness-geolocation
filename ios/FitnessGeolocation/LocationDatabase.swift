@@ -392,9 +392,10 @@ final class LocationDatabase {
   }
 
   func getSessionForUpload(_ sessionId: String) -> [String: Any]? {
-    // Fetch session and points OUTSIDE the queue lock to avoid deadlock
-    // (getPendingForSession needs its own queue lock)
-    var result: [String: Any]?
+    // NOTE: We fetch session and points in TWO separate queue.sync blocks to prevent
+    // re-entrant deadlock (queue.sync inside queue.sync on a serial queue = deadlock).
+    var sessionDict: [String: Any]?
+
     queue.sync {
       var stmt: OpaquePointer?
       let sql = "SELECT * FROM sessions WHERE id = ?"
@@ -402,11 +403,12 @@ final class LocationDatabase {
       defer { sqlite3_finalize(stmt) }
       sqlite3_bind_text(stmt, 1, (sessionId as NSString).utf8String, -1, nil)
       guard sqlite3_step(stmt) == SQLITE_ROW else { return }
-
-      var dict = sessionFrom(stmt: stmt)
-      dict["points"] = getPendingForSession(sessionId: sessionId).map { $0.toDictionary() }
-      result = dict
+      sessionDict = sessionFrom(stmt: stmt)
     }
+
+    guard var result = sessionDict else { return nil }
+    // getPendingForSession uses its own queue.sync — call AFTER the first lock is released
+    result["points"] = getPendingForSession(sessionId: sessionId).map { $0.toDictionary() }
     return result
   }
 

@@ -175,6 +175,32 @@ RCT_EXTERN_METHOD(setDebugMonitorConfig:(NSDictionary *)config
 RCT_EXTERN_METHOD(getDebugMotionState:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 
+// MARK: - Live Activities
+
+RCT_EXTERN_METHOD(setLiveActivityEnabled:(BOOL)enabled)
+
+RCT_EXTERN_METHOD(getLiveActivityEnabled:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(startLiveActivity:(NSString *)name
+                  activityType:(NSString *)activityType
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(updateLiveActivity:(nonnull NSNumber *)distance
+                  duration:(nonnull NSNumber *)duration
+                  pace:(NSString *)pace
+                  speed:(nonnull NSNumber *)speed
+                  calories:(nonnull NSNumber *)calories
+                  gpsStatus:(NSString *)gpsStatus
+                  isPaused:(BOOL)isPaused)
+
+RCT_EXTERN_METHOD(endLiveActivity:(nonnull NSNumber *)distance
+                  duration:(nonnull NSNumber *)duration
+                  calories:(nonnull NSNumber *)calories
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
 + (BOOL)requiresMainQueueSetup { return YES; }
 
 @end

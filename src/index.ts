@@ -13,5 +13,6 @@ export { ProviderEvents } from './ProviderEvents';
 export { DebugMonitor, debugMonitor } from './DebugMonitor';
 export { FitnessTrackingService } from './FitnessTrackingService';
 export { default as fitnessTrackingService } from './FitnessTrackingService';
+export { LiveActivity } from './LiveActivity';
 export { PositionError } from './types';
 export type * from './types';

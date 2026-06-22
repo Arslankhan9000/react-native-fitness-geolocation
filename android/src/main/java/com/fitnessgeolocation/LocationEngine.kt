@@ -121,6 +121,7 @@ class LocationEngine private constructor(
   private val filter = LocationFilter()
   private val listeners = linkedSetOf<Listener>()
   private val diagnostics = ArrayDeque<Map<String, Any?>>()
+  private val liveActivityManager = LiveActivityManager.getInstance(context)
 
   // Watch state
   private var callback: LocationCallback? = null
@@ -150,6 +151,7 @@ class LocationEngine private constructor(
 
   // Session state
   private var currentSessionId: String? = null
+  private var currentSessionStartTime: Long = 0L
   private var cumulativeDistance: Double = 0.0
   private var lastProcessedLocation: Location? = null
 
@@ -297,6 +299,8 @@ class LocationEngine private constructor(
       .putLong("watch_interval", intervalMs)
       .putFloat("watch_distance", distanceMeters)
       .apply()
+    // Schedule watchdog to recover from OS-kill or crash
+    TrackingRestartWorker.schedule(context)
     return id
   }
 
@@ -491,6 +495,35 @@ class LocationEngine private constructor(
       timeBasedRunnable?.let { timeBasedHandler?.postDelayed(it, timeBasedIntervalMs) }
     }
 
+    // Update Live Activity with current workout data (if session active).
+    // Issue #8: Guard with isUserEnabled() + isActivityActive() before calling update
+    // so we don't create unnecessary work when Live Activity isn't running.
+    // Wrapped in try/catch so a notification failure never kills the tick loop.
+    if (currentSessionId != null && currentSessionStartTime > 0
+      && liveActivityManager.isUserEnabled()
+      && liveActivityManager.isActivityActive()
+    ) {
+      val durationSeconds = (now - currentSessionStartTime) / 1000
+      val paceFormatted = liveActivityManager.formatPace(speed.toDouble())
+      val sessionActivityType = currentSessionId?.let { "running" } ?: "running" // TODO: store actual type
+
+      try {
+        liveActivityManager.updateActivity(
+          distance = cumulativeDistance,
+          duration = durationSeconds,
+          pace = paceFormatted,
+          speed = speed.toDouble() * 3.6,
+          calories = liveActivityManager.estimateCalories(cumulativeDistance, sessionActivityType),
+          heartRate = null,
+          gpsStatus = strength,
+          isPaused = timeBasedPaused
+        )
+      } catch (e: Exception) {
+        // Non-fatal: Live Activity update must never break GPS tracking.
+        Log.w(TAG, "flushTimeBasedTick live_activity_update_error: ${e.message}")
+      }
+    }
+
     // Notify listeners
     for (l in listenerSnapshot()) {
       l.onTimeBasedTick(loc)
@@ -596,6 +629,8 @@ class LocationEngine private constructor(
     if (!keepWatchState) {
       prefs.edit().putBoolean("watch_active", false).apply()
     }
+    // Cancel watchdog when tracking stops
+    TrackingRestartWorker.cancel(context)
     log("watch-stop", mapOf("pending" to database.pendingCount()))
     devLog("info", "LocationEngine", "watch_stopped", mapOf("pending" to database.pendingCount()))
   }
@@ -611,14 +646,50 @@ class LocationEngine private constructor(
     startUpdates()
   }
 
+  /**
+   * Restore watch state after app crash or device reboot.
+   * Called by BootCompletedReceiver and TrackingRestartWorker.
+   */
+  @SuppressLint("MissingPermission")
+  fun restoreWatchFromCrash(modeStr: String, intervalMs: Long, distanceM: Float) {
+    this.mode = TrackingMode.entries.find { it.name == modeStr } ?: TrackingMode.fitness
+    this.intervalMs = intervalMs
+    this.distanceMeters = distanceM
+    this.isWatching = true
+    Log.i(TAG, "restoreWatchFromCrash mode=${mode.name} interval=${intervalMs}ms")
+    startUpdates()
+    // Re-arm watchdog for continued crash recovery
+    TrackingRestartWorker.schedule(context)
+  }
+
+  /**
+   * Write a diagnostic event to the internal log buffer.
+   * Used by BootCompletedReceiver and TrackingRestartWorker for audit trails.
+   */
+  fun logDiagnostic(event: Map<String, Any?>) {
+    val mutableEvent = event.toMutableMap()
+    mutableEvent["platform"] = "android"
+    log(event["event"] as? String ?: "diagnostic", mutableEvent - "event")
+  }
+
   // ─── Session Management ────────────────────────────────────────────────────
 
   fun createSession(name: String, activityType: String, extras: String?): String {
     val id = database.createSession(name, activityType, extras)
     currentSessionId = id
+    currentSessionStartTime = System.currentTimeMillis()
     cumulativeDistance = 0.0
     lastProcessedLocation = null
+    // Persist session ID so BootCompletedReceiver / watchdog can reference it
+    prefs.edit().putString("active_session_id", id).apply()
     Log.d(TAG, "session_created id=$id name=$name")
+    
+    // Start Live Activity if enabled
+    liveActivityManager.startActivity(
+      workoutName = name,
+      activityType = activityType
+    )
+    
     return id
   }
 
@@ -626,6 +697,13 @@ class LocationEngine private constructor(
     database.endSession(sessionId, data)
     if (currentSessionId == sessionId) currentSessionId = null
     Log.d(TAG, "session_ended id=$sessionId dist=${data["totalDistance"]} pts=${data["pointCount"]}")
+    
+    // End Live Activity if active
+    liveActivityManager.endActivity(
+      finalDistance = (data["totalDistance"] as? Double) ?: 0.0,
+      finalDuration = ((data["totalDuration"] as? Double)?.toLong() ?: 0L) / 1000, // Convert ms to seconds
+      finalCalories = (data["calories"] as? Int) ?: 0
+    )
   }
 
   fun discardSession(sessionId: String) {
@@ -663,6 +741,9 @@ class LocationEngine private constructor(
           log("persist-failed", mapOf("accuracy" to filtered.location.accuracy))
           return
         }
+
+        // Update heartbeat so TrackingRestartWorker can detect GPS stalls
+        prefs.edit().putLong("last_location_heartbeat", System.currentTimeMillis()).apply()
 
         Log.v(TAG, "persist lat=${stored.latitude} lng=${stored.longitude} acc=${stored.accuracy} spd=${stored.speed} dist=$dist cumulative=$cumulativeDistance")
 
@@ -791,7 +872,16 @@ class LocationEngine private constructor(
     callback = cb
     try {
       fusedClient.requestLocationUpdates(request, cb, Looper.getMainLooper())
-    } catch (_: SecurityException) {}
+    } catch (e: SecurityException) {
+      // Issue #9: Log and notify listeners — silent swallow hid GPS permission loss.
+      Log.e(TAG, "restartUpdatesInternal: location permission revoked — ${e.message}")
+      callback = null
+      val ids = watchIds.toList()
+      log("location-error", mapOf("message" to "Location permission revoked during GPS resume"))
+      listenerSnapshot().forEach {
+        it.onLocationError("Location permission revoked", ids)
+      }
+    }
   }
 
   /** Feed speed for GPS resume detection (used from LocationFilter processing) */
@@ -1142,4 +1232,30 @@ class LocationEngine private constructor(
       cumulativeDistance = cumulativeDistance,
     )
   }
+
+  // ─── Live Activity Management ──────────────────────────────────────────────
+
+  /**
+   * Enable or disable Live Activity feature (user setting).
+   * Live Activity is OFF by default for security and privacy.
+   */
+  fun setLiveActivityEnabled(enabled: Boolean) {
+    liveActivityManager.setEnabled(enabled)
+    Log.d(TAG, "live_activity_enabled=$enabled")
+  }
+
+  /**
+   * Check if Live Activity is enabled by user.
+   */
+  fun isLiveActivityEnabled(): Boolean = liveActivityManager.isUserEnabled()
+
+  /**
+   * Check if Live Activity is currently active (showing).
+   */
+  fun isLiveActivityActive(): Boolean = liveActivityManager.isActivityActive()
+
+  /**
+   * Check if device supports Live Activity feature.
+   */
+  fun isLiveActivitySupported(): Boolean = liveActivityManager.isSupported()
 }

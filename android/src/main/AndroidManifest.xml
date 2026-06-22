@@ -1,21 +1,194 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
-  <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-  <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-  <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
-  <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
-  <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-  <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
-  <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
-  <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.fitnessgeolocation">
 
-  <application>
-    <service
-      android:name=".FitnessLocationService"
-      android:exported="false"
-      android:foregroundServiceType="location" />
-    <service
-      android:name=".FitnessHeadlessTaskService"
-      android:exported="false" />
-  </application>
+    <!-- ============================================ -->
+    <!-- LOCATION PERMISSIONS (Required) -->
+    <!-- ============================================ -->
+    
+    <!-- Fine location for GPS tracking -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    
+    <!-- Coarse location for fallback -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    
+    <!-- Background location (Android 10+) -->
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+
+    <!-- ============================================ -->
+    <!-- FOREGROUND SERVICE PERMISSIONS (Android 9+) -->
+    <!-- ============================================ -->
+    
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    
+    <!-- Foreground service type: location (Android 10+) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+
+    <!-- ============================================ -->
+    <!-- BATTERY OPTIMIZATION EXEMPTION -->
+    <!-- CRITICAL for Doze Mode bypass -->
+    <!-- ============================================ -->
+    
+    <!-- Request to ignore battery optimizations -->
+    <!-- Strava, Garmin, Apple Fitness all use this -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    
+    <!-- Wake lock to prevent CPU sleep during tracking -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- ============================================ -->
+    <!-- BOOT & RESTART PERMISSIONS -->
+    <!-- For app kill recovery -->
+    <!-- ============================================ -->
+    
+    <!-- Listen for device boot to auto-restart tracking -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- ============================================ -->
+    <!-- MOTION DETECTION (Optional) -->
+    <!-- For auto-pause / auto-resume -->
+    <!-- ============================================ -->
+    
+    <!-- Activity recognition for motion detection -->
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
+    
+    <!-- Fallback for Android 9 and below -->
+    <uses-permission android:name="com.google.android.gms.permission.ACTIVITY_RECOGNITION" />
+
+    <!-- ============================================ -->
+    <!-- NETWORK (For map matching, HTTP sync) -->
+    <!-- ============================================ -->
+    
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- ============================================ -->
+    <!-- NOTIFICATIONS (For foreground service) -->
+    <!-- ============================================ -->
+    
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application>
+        
+        <!-- ======================================== -->
+        <!-- FOREGROUND SERVICE -->
+        <!-- Keeps GPS active when screen is locked -->
+        <!-- ======================================== -->
+        
+        <service
+            android:name=".FitnessLocationService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="location"
+            android:stopWithTask="false">
+            <!-- stopWithTask=false: Keep service alive when app is swiped away -->
+        </service>
+
+        <!-- ======================================== -->
+        <!-- BOOT COMPLETED RECEIVER -->
+        <!-- Auto-restart tracking after device reboot -->
+        <!-- ======================================== -->
+        
+        <receiver
+            android:name=".BootCompletedReceiver"
+            android:enabled="true"
+            android:exported="false"
+            android:directBootAware="true">
+            <!-- directBootAware: Start before user unlocks device (Android 7+) -->
+            
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <!-- Xiaomi, OnePlus, Oppo quick boot -->
+                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
+
+        <!-- ======================================== -->
+        <!-- WORKMANAGER (App Kill Recovery) -->
+        <!-- Auto-restart tracking if app is killed -->
+        <!-- ======================================== -->
+        
+        <!-- WorkManager is automatically initialized -->
+        <!-- No need to declare workers in manifest -->
+        
+        <!-- ======================================== -->
+        <!-- HEADLESS JS TASK SERVICE (Optional) -->
+        <!-- For background event processing -->
+        <!-- ======================================== -->
+        
+        <service
+            android:name=".FitnessHeadlessTaskService"
+            android:enabled="true"
+            android:exported="false" />
+
+    </application>
+
+    <!-- ============================================ -->
+    <!-- HARDWARE REQUIREMENTS -->
+    <!-- ============================================ -->
+    
+    <!-- GPS hardware required -->
+    <uses-feature
+        android:name="android.hardware.location.gps"
+        android:required="true" />
+    
+    <!-- Network location (cell towers, WiFi) -->
+    <uses-feature
+        android:name="android.hardware.location.network"
+        android:required="false" />
+
+    <!-- ============================================ -->
+    <!-- BATTERY OPTIMIZATION EXEMPTION NOTES -->
+    <!-- ============================================ -->
+    
+    <!--
+    Google Play Store Policy:
+    
+    Apps can request REQUEST_IGNORE_BATTERY_OPTIMIZATIONS if they are:
+    - Fitness / health tracking apps ✓
+    - Navigation apps ✓
+    - Alarm / timer apps ✓
+    - Messaging apps ✓
+    
+    Our use case (fitness tracking) is EXPLICITLY ALLOWED.
+    
+    Strava, Garmin Connect, Nike Run Club, Apple Fitness all request this.
+    
+    Without this permission:
+    - Android Doze Mode throttles GPS after 30-60 min
+    - Location updates become unreliable
+    - Workouts will have missing data
+    
+    User Experience:
+    - Show dialog explaining why we need it
+    - "To track your workouts accurately with screen off"
+    - Allow user to decline (but warn about data loss)
+    -->
+
+    <!-- ============================================ -->
+    <!-- MANUFACTURER-SPECIFIC NOTES -->
+    <!-- ============================================ -->
+    
+    <!--
+    Xiaomi (MIUI):
+    - Has aggressive "App battery saver" beyond standard Doze
+    - Users must manually disable in: Settings > Battery > App battery saver
+    
+    Huawei (EMUI):
+    - Has "Power Genie" that aggressively kills apps
+    - Users must disable in: Settings > Battery > App launch
+    
+    Samsung (One UI):
+    - Has "Adaptive Battery" that learns app usage
+    - Users should add to "Never sleeping apps" in Settings > Battery
+    
+    OnePlus / Oppo / Realme (ColorOS):
+    - Has "App Auto-Launch Management"
+    - Users must enable auto-launch for tracking to survive reboot
+    
+    Our app detects these manufacturers and shows specific instructions.
+    See: BatteryOptimizationManager.kt
+    -->
+
 </manifest>
