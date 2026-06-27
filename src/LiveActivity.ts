@@ -1,12 +1,7 @@
-import { NativeModules, Platform } from 'react-native';
+import { Platform } from 'react-native';
+import { getFitnessGeolocationNative } from './native/getNativeModule';
 
-const LINKING_ERROR =
-  `The package 'react-native-fitness-geolocation' doesn't seem to be linked. ` +
-  'Run pod install (iOS) and rebuild the app.';
-
-const Native = NativeModules.FitnessGeolocation
-  ? NativeModules.FitnessGeolocation
-  : new Proxy({}, { get() { throw new Error(LINKING_ERROR); } });
+const Native = getFitnessGeolocationNative();
 
 /**
  * Live Activity bridge — controls the Lock Screen / Dynamic Island workout widget.
@@ -45,11 +40,11 @@ export const LiveActivity = {
   },
 
   /**
-   * Push updated workout metrics to the Live Activity.
-   * Fire-and-forget — no await needed on the hot GPS path.
-   *
-   * @param distance  Meters travelled so far
-   * @param duration  Seconds elapsed
+ * Push updated workout metrics to the Live Activity.
+ * Fire-and-forget — elapsed time ticks on the lock screen via native `.timer` style;
+ * you do not need to push every second.
+ *
+ * @param duration  Legacy bridge param (ignored by native widget timer)
    * @param pace      Formatted string e.g. "5:23"
    * @param speed     km/h
    * @param calories  kcal estimate
@@ -70,10 +65,18 @@ export const LiveActivity = {
   },
 
   /**
-   * End the Live Activity and show a final summary for up to 4 hours.
+   * End the Live Activity and dismiss it from the lock screen immediately.
    */
   async end(distance: number, duration: number, calories: number): Promise<void> {
     if (Platform.OS !== 'ios') return;
     return Native.endLiveActivity(distance, duration, calories);
+  },
+
+  /**
+   * Dismiss all Live Activities (stale widgets after crash or without a clean stop).
+   */
+  async dismissAll(): Promise<void> {
+    if (Platform.OS !== 'ios') return;
+    return Native.dismissAllLiveActivities?.();
   },
 };

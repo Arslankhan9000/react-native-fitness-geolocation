@@ -24,14 +24,16 @@ class BootCompletedReceiver : BroadcastReceiver() {
   }
 
   override fun onReceive(context: Context, intent: Intent?) {
-    if (intent?.action != Intent.ACTION_BOOT_COMPLETED) {
+    if (!PlatformCompat.isBootCompletedAction(intent?.action)) {
       return
     }
 
     Log.i(TAG, "Device rebooted - checking if tracking should resume")
 
     val prefs = context.getSharedPreferences("fitness_geolocation", Context.MODE_PRIVATE)
-    val wasTracking = prefs.getBoolean("watch_active", false)
+    val sessionLegitimate = prefs.getBoolean("session_active", false)
+      || prefs.getString("active_session_id", null) != null
+    val wasTracking = prefs.getBoolean("watch_active", false) && sessionLegitimate
     val sessionId = prefs.getString("active_session_id", null)
 
     if (!wasTracking) {
@@ -45,9 +47,12 @@ class BootCompletedReceiver : BroadcastReceiver() {
       // Start foreground service
       val serviceIntent = Intent(context, FitnessLocationService::class.java)
       serviceIntent.action = FitnessLocationService.ACTION_START
-      
-      // Must use startForegroundService on Android O+
-      context.startForegroundService(serviceIntent)
+
+      if (!PlatformCompat.startLocationForegroundService(context, serviceIntent)) {
+        Log.w(TAG, "FGS blocked after boot — user must open app to resume")
+        showResumeFailed(context, "Background service start blocked by Android")
+        return
+      }
 
       // Restore tracking state
       val engine = LocationEngine.getInstance(context)

@@ -1,4 +1,4 @@
-import { NativeModules } from 'react-native';
+import { getFitnessGeolocationNative } from './native/getNativeModule';
 import Geolocation from './Geolocation';
 import { MotionEngine } from './MotionEngine';
 import { PermissionManager } from './PermissionManager';
@@ -11,7 +11,7 @@ import type {
   TrackingMode,
 } from './types';
 
-const Native = NativeModules.FitnessGeolocation;
+const Native = getFitnessGeolocationNative();
 
 /**
  * Heart of activity tracker apps — orchestrates permissions, GPS, motion, auto-pause.

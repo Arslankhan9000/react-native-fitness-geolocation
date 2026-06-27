@@ -22,6 +22,7 @@ final class MotionEngine {
   private let pedometer = CMPedometer()
   private var isRunning = false
   private var currentActivity: MotionActivityType = .unknown
+  private var lastConfidence: Double = 0.5
   private var stationarySince: Date?
   private var lastStepCount = 0
 
@@ -48,6 +49,7 @@ final class MotionEngine {
   }
 
   func currentActivityType() -> String { currentActivity.rawValue }
+  func currentConfidence() -> Double { lastConfidence }
 
   private func startActivityUpdates() {
     guard CMMotionActivityManager.isActivityAvailable() else { return }
@@ -56,6 +58,7 @@ final class MotionEngine {
       let type = self.classify(a)
       let confidence = self.confidence(for: a)
       self.currentActivity = type
+      self.lastConfidence = confidence
       self.delegate?.motionEngine(self, didUpdate: type, confidence: confidence)
       self.evaluateAutoPauseResume(type: type)
     }

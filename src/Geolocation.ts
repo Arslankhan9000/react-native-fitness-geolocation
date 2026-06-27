@@ -1,5 +1,9 @@
-import { AppState, NativeEventEmitter, NativeModules, Platform } from 'react-native';
+import { AppState, NativeEventEmitter, Platform } from 'react-native';
 import { getConfiguration, setConfiguration, shouldSkipPermissionRequests } from './config';
+import { applyLoggerConfig } from './config/ConfigManager';
+import { LogLevel } from './config/LogLevel';
+import { normalizeConfig } from './config/normalizeConfig';
+import { Logger } from './Logger';
 import type {
   BackgroundGeolocationConfig,
   BackgroundGeolocationState,
@@ -11,16 +15,11 @@ import type {
   LocationSubscription,
 } from './types';
 import { PositionError } from './types';
+import { getFitnessGeolocationNative } from './native/getNativeModule';
 
 export { GeolocationOptions, GeolocationResponse, GeolocationError, GeolocationConfiguration, PositionError };
 
-const LINKING_ERROR =
-  `The package 'react-native-fitness-geolocation' doesn't seem to be linked. ` +
-  'Run pod install (iOS) and rebuild the app.';
-
-const Native = NativeModules.FitnessGeolocation
-  ? NativeModules.FitnessGeolocation
-  : new Proxy({}, { get() { throw new Error(LINKING_ERROR); } });
+const Native = getFitnessGeolocationNative();
 
 const emitter = new NativeEventEmitter(Native);
 
@@ -304,21 +303,30 @@ async function getBackgroundState(): Promise<BackgroundGeolocationState> {
 
 export const Geolocation = {
   async ready(config: BackgroundGeolocationConfig = {}): Promise<BackgroundGeolocationState> {
-    backgroundConfig = {
+    const merged: BackgroundGeolocationConfig = {
       enableHighAccuracy: true,
       distanceFilter: 0,
       pausesLocationUpdatesAutomatically: false,
-      showsBackgroundLocationIndicator: true,
+      showsBackgroundLocationIndicator: false,
       trackingMode: 'fitness',
       authorizationLevel: 'always',
       stopOnTerminate: false,
       ...backgroundConfig,
       ...config,
     };
+    backgroundConfig = normalizeConfig(merged);
     backgroundConfigured = true;
 
     this.setRNConfiguration(backgroundConfig);
+    await applyLoggerConfig(backgroundConfig);
     await Native.setConfiguration?.(backgroundConfig).catch(() => {});
+
+    if (backgroundConfig.url || backgroundConfig.schedule?.length) {
+      await Native.ready?.(backgroundConfig).catch(() => {});
+      if (backgroundConfig.url) {
+        Native.configureHttp?.(backgroundConfig);
+      }
+    }
 
     if (backgroundConfig.startOnReady) {
       await this.start();
@@ -373,7 +381,104 @@ export const Geolocation = {
   },
 
   async changePace(isMoving: boolean): Promise<void> {
-    await Native.setActivityPaused(!isMoving);
+    if (Native.changePace) {
+      await Native.changePace(isMoving);
+    } else {
+      await Native.setActivityPaused(!isMoving);
+    }
+  },
+
+  async setConfig(config: BackgroundGeolocationConfig): Promise<BackgroundGeolocationState> {
+    backgroundConfig = normalizeConfig({ ...backgroundConfig, ...config });
+    await applyLoggerConfig(backgroundConfig);
+    await Native.setConfig?.(backgroundConfig).catch(() => Native.setConfiguration?.(backgroundConfig));
+    if (config.url) Native.configureHttp?.(config);
+    return getBackgroundState();
+  },
+
+  async reset(): Promise<void> {
+    await Native.reset?.();
+    backgroundWatchId = null;
+    backgroundConfigured = false;
+  },
+
+  async startSchedule(): Promise<void> {
+    await Native.startSchedule?.();
+  },
+
+  async stopSchedule(): Promise<void> {
+    await Native.stopSchedule?.();
+  },
+
+  async startGeofences(): Promise<void> {
+    await Native.startGeofences?.();
+  },
+
+  /** Upload pending SQLite locations to configured server URL */
+  async uploadToServer(): Promise<unknown[]> {
+    return Native.sync?.() ?? [];
+  },
+
+  async getLocations(): Promise<unknown[]> {
+    return Native.getLocations?.() ?? [];
+  },
+
+  async destroyLocation(uuid: string): Promise<boolean> {
+    return Native.destroyLocation?.(uuid) ?? false;
+  },
+
+  async insertLocation(params: Record<string, unknown>): Promise<string | null> {
+    return Native.insertLocation?.(params) ?? null;
+  },
+
+  async uploadLog(url: string, query: Record<string, unknown> = {}): Promise<boolean> {
+    return Native.uploadLog?.(url, query) ?? false;
+  },
+
+  async requestTemporaryFullAccuracy(purpose: string): Promise<boolean> {
+    return Native.requestTemporaryFullAccuracy?.(purpose) ?? false;
+  },
+
+  onHttp(callback: (event: { success: boolean; status: number; responseText: string }) => void): LocationSubscription {
+    ensureBridgeListeners();
+    Native.addHttpListener?.();
+    const sub = emitter.addListener('httpResponse', callback);
+    return {
+      remove: () => {
+        sub.remove();
+        Native.removeHttpListener?.();
+      },
+    };
+  },
+
+  onGeofence(callback: (event: Record<string, unknown>) => void): LocationSubscription {
+    ensureBridgeListeners();
+    const sub = emitter.addListener('geofence', callback);
+    return { remove: () => sub.remove() };
+  },
+
+  onGeofencesChange(callback: (event: { on: string[]; off: string[] }) => void): LocationSubscription {
+    ensureBridgeListeners();
+    const sub = emitter.addListener('geofencesChange', callback);
+    return { remove: () => sub.remove() };
+  },
+
+  onSchedule(callback: (event: Record<string, unknown>) => void): LocationSubscription {
+    ensureBridgeListeners();
+    const sub = emitter.addListener('schedule', callback);
+    return { remove: () => sub.remove() };
+  },
+
+  onEnabledChange(callback: (enabled: boolean) => void): LocationSubscription {
+    ensureBridgeListeners();
+    const sub = emitter.addListener('enabledchange', (e: { enabled: boolean }) => callback(e.enabled));
+    return { remove: () => sub.remove() };
+  },
+
+  onMotionChange(callback: (event: { isMoving: boolean }) => void): LocationSubscription {
+    ensureBridgeListeners();
+    const sub = emitter.addListener('motionchange', callback);
+    return { remove: () => sub.remove() };
   },
 
   sync(): Promise<number> {
@@ -543,5 +648,7 @@ export const Geolocation = {
     return () => sub.remove();
   },
 };
+
+Object.assign(Geolocation, { LogLevel, logger: Logger });
 
 export default Geolocation;

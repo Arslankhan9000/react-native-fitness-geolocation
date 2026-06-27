@@ -138,6 +138,7 @@ export const FitnessTrackingService = {
         foregroundGranted: auth.status === 'granted',
         backgroundGranted: auth.always === true,
         motionGranted: true,
+        notificationsGranted: true,
         status: auth.always ? 'ready' : 'foreground_only',
       };
     }

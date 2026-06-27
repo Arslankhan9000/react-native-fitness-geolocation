@@ -89,7 +89,8 @@ class TrackingRestartWorker(
       Log.d(TAG, "Watchdog tick - checking tracking state")
 
       val prefs = applicationContext.getSharedPreferences("fitness_geolocation", Context.MODE_PRIVATE)
-      val shouldBeTracking = prefs.getBoolean("watch_active", false)
+      val shouldBeTracking =
+        prefs.getBoolean("watch_active", false) && prefs.getBoolean("session_active", false)
       val lastHeartbeat = prefs.getLong("last_location_heartbeat", 0L)
       val now = System.currentTimeMillis()
 
@@ -140,7 +141,10 @@ class TrackingRestartWorker(
       // Restart foreground service
       val serviceIntent = Intent(applicationContext, FitnessLocationService::class.java)
       serviceIntent.action = FitnessLocationService.ACTION_START
-      applicationContext.startForegroundService(serviceIntent)
+      if (!PlatformCompat.startLocationForegroundService(applicationContext, serviceIntent)) {
+        Log.w(TAG, "FGS blocked by watchdog — will retry on next tick")
+        return
+      }
 
       // Restore location engine
       engine.restoreWatchFromCrash(mode, intervalMs, distance)

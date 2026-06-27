@@ -1,7 +1,8 @@
-import { NativeModules, Platform } from 'react-native';
+import { Platform } from 'react-native';
 import type { HttpConfig, HttpEvent, LocationSubscription } from './types';
+import { getFitnessGeolocationNative } from './native/getNativeModule';
 
-const Native = NativeModules.FitnessGeolocation;
+const Native = getFitnessGeolocationNative();
 const TAG = 'FitnessGeoHttp';
 
 type HttpCallback = (event: HttpEvent) => void;

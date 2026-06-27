@@ -1,17 +1,13 @@
-import { Linking, NativeModules, PermissionsAndroid, Platform } from 'react-native';
+import { Linking, PermissionsAndroid, Platform } from 'react-native';
 import type { FitnessPermissionResult } from './types';
+import { getFitnessGeolocationNative } from './native/getNativeModule';
 
-const LINKING_ERROR =
-  `The package 'react-native-fitness-geolocation' doesn't seem to be linked. ` +
-  'Run pod install (iOS) and rebuild the app.';
-
-const Native = NativeModules.FitnessGeolocation
-  ? NativeModules.FitnessGeolocation
-  : new Proxy({}, { get() { throw new Error(LINKING_ERROR); } });
+const Native = getFitnessGeolocationNative();
 
 const ANDROID_FINE = PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION;
 const ANDROID_BACKGROUND = PermissionsAndroid.PERMISSIONS.ACCESS_BACKGROUND_LOCATION;
 const ANDROID_MOTION = PermissionsAndroid.PERMISSIONS.ACTIVITY_RECOGNITION;
+const ANDROID_NOTIFICATIONS = PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS;
 
 async function requestAndroidPermission(
   permission: (typeof PermissionsAndroid.PERMISSIONS)[keyof typeof PermissionsAndroid.PERMISSIONS],
@@ -54,8 +50,21 @@ async function requestAndroidMotion(): Promise<boolean> {
   );
 }
 
+/** Android 13+ (API 33) — required to show foreground-service tracking notifications */
+async function requestAndroidNotifications(): Promise<boolean> {
+  if (Platform.OS !== 'android' || Number(Platform.Version) < 33) return true;
+  return requestAndroidPermission(
+    ANDROID_NOTIFICATIONS,
+    {
+      title: 'Workout notifications',
+      message: 'Allow notifications so you can see live workout tracking on the lock screen.',
+    },
+  );
+}
+
 /**
  * Cross-platform permission helpers for fitness / background GPS apps.
+ * Supports Android 9 (API 28) through Android 15/16+ and iOS 16.1+.
  */
 export const PermissionManager = {
   async getStatus(): Promise<{ location: string; always: boolean }> {
@@ -86,12 +95,19 @@ export const PermissionManager = {
     return requestAndroidMotion();
   },
 
+  async requestNotifications(): Promise<boolean> {
+    if (Platform.OS === 'ios') return true;
+    return requestAndroidNotifications();
+  },
+
   /**
    * Recommended flow for fitness apps:
-   * 1. Foreground location → 2. Background / Always → 3. Motion (Android)
+   * 1. Foreground location → 2. Background / Always → 3. Notifications (Android 13+)
+   * → 4. Motion (Android 10+)
    */
   async requestFitnessPermissions(options?: {
     includeMotion?: boolean;
+    includeNotifications?: boolean;
   }): Promise<FitnessPermissionResult> {
     const fg = await this.requestForeground();
     if (!fg) {
@@ -99,12 +115,16 @@ export const PermissionManager = {
         foregroundGranted: false,
         backgroundGranted: false,
         motionGranted: false,
+        notificationsGranted: false,
         status: 'denied',
         message: 'Location permission is required to track activities.',
       };
     }
 
     const bg = await this.requestBackground();
+    const notifications = options?.includeNotifications !== false
+      ? await this.requestNotifications()
+      : true;
     const motion = options?.includeMotion ? await this.requestMotion() : true;
     const statusRes = await Native.getAuthorizationStatus();
 
@@ -116,6 +136,7 @@ export const PermissionManager = {
       foregroundGranted: true,
       backgroundGranted: statusRes.always || bg,
       motionGranted: motion,
+      notificationsGranted: notifications,
       status,
       message: status === 'ready'
         ? undefined

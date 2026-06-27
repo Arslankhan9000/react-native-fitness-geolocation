@@ -31,6 +31,7 @@ data class StoredLocation(
   val batteryLevel: Double = -1.0,
   val distanceFromPrev: Double = 0.0,
   val cumulativeDistance: Double = 0.0,
+  val qualityJson: String? = null,
 ) {
   fun toPositionMap(): WritableMap {
     val coords = Arguments.createMap()
@@ -60,6 +61,7 @@ data class StoredLocation(
     map.putDouble("distanceFromPrev", distanceFromPrev)
     map.putDouble("cumulativeDistance", cumulativeDistance)
     map.putString("gpsStrength", signalStrength)
+    if (qualityJson != null) map.putString("quality", qualityJson) else map.putNull("quality")
     return map
   }
 
@@ -119,6 +121,11 @@ class LocationEngine private constructor(
   private val fusedClient = LocationServices.getFusedLocationProviderClient(context)
   private val database = LocationDatabase(context)
   private val filter = LocationFilter()
+  private val geofenceManager = GeofenceManager(context)
+  private val scheduleManager = ScheduleManager()
+  private val nativeLogger = NativeLogger(database)
+  private val providerMonitor = ProviderMonitor(context)
+  private var currentActivityType = "running"
   private val listeners = linkedSetOf<Listener>()
   private val diagnostics = ArrayDeque<Map<String, Any?>>()
   private val liveActivityManager = LiveActivityManager.getInstance(context)
@@ -169,7 +176,7 @@ class LocationEngine private constructor(
   }
 
   init {
-    restoreWatchIfNeeded()
+    reconcileWatchStateOnColdLaunch()
   }
 
   // ─── Listener management ───────────────────────────────────────────────────
@@ -186,22 +193,19 @@ class LocationEngine private constructor(
     return synchronized(listeners) { listeners.toList() }
   }
 
-  private fun isAppActive(): Boolean {
-    val app = context.applicationContext as? Application ?: return true
-    val activityManager = app.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
-    val processes = activityManager.runningAppProcesses ?: return true
-    for (proc in processes) {
-      if (proc.processName == app.packageName) {
-        return proc.importance <= android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
-      }
-    }
-    return false
-  }
+  private var hostInForeground = true
+
+  private fun isAppActive(): Boolean = hostInForeground
 
   fun onHostResume() {
+    hostInForeground = true
     Log.d(TAG, "foreground pending=${database.pendingCount()}")
     log("foreground", mapOf("pending" to database.pendingCount()))
     listenerSnapshot().forEach { it.onEnterForeground() }
+  }
+
+  fun onHostPause() {
+    hostInForeground = false
   }
 
   // ─── Options ───────────────────────────────────────────────────────────────
@@ -295,6 +299,7 @@ class LocationEngine private constructor(
     startUpdates()
     prefs.edit()
       .putBoolean("watch_active", true)
+      .putBoolean("session_active", true)
       .putString("watch_mode", mode.name)
       .putLong("watch_interval", intervalMs)
       .putFloat("watch_distance", distanceMeters)
@@ -314,7 +319,33 @@ class LocationEngine private constructor(
   fun setPaused(paused: Boolean) {
     isPaused = paused
     log(if (paused) "pause" else "resume", mapOf("mode" to mode.name))
-    if (paused) setTrackingMode("stationary") else setTrackingMode("fitness")
+    if (paused) {
+      setTrackingMode("stationary")
+      pauseGpsHardware()
+    } else {
+      setTrackingMode("fitness")
+      resumeGpsHardwareIfWatching()
+    }
+  }
+
+  /** Stop fused updates while keeping watch registrations (manual or auto pause). */
+  private fun pauseGpsHardware() {
+    cancelStopTimeout()
+    callback?.let { fusedClient.removeLocationUpdates(it) }
+    isWatching = false
+    log("gps-pause", mapOf("watchCount" to watchIds.size))
+  }
+
+  /** Restart fused updates after pause if watches are still registered. */
+  @SuppressLint("MissingPermission")
+  private fun resumeGpsHardwareIfWatching() {
+    when {
+      watchIds.isNotEmpty() -> startUpdates()
+      timeBasedWatchId != null -> {
+        startTimeBasedUpdates()
+        startTimeBasedTimer()
+      }
+    }
   }
 
   // ─── Time-Based Tracking ──────────────────────────────────────────────────
@@ -505,7 +536,7 @@ class LocationEngine private constructor(
     ) {
       val durationSeconds = (now - currentSessionStartTime) / 1000
       val paceFormatted = liveActivityManager.formatPace(speed.toDouble())
-      val sessionActivityType = currentSessionId?.let { "running" } ?: "running" // TODO: store actual type
+      val sessionActivityType = currentActivityType
 
       try {
         liveActivityManager.updateActivity(
@@ -627,7 +658,10 @@ class LocationEngine private constructor(
     timeBasedHandler?.removeCallbacksAndMessages(null)
     timeBasedRunnable = null
     if (!keepWatchState) {
-      prefs.edit().putBoolean("watch_active", false).apply()
+      prefs.edit()
+        .putBoolean("watch_active", false)
+        .putBoolean("session_active", false)
+        .apply()
     }
     // Cancel watchdog when tracking stops
     TrackingRestartWorker.cancel(context)
@@ -638,12 +672,31 @@ class LocationEngine private constructor(
   @SuppressLint("MissingPermission")
   private fun restoreWatchIfNeeded() {
     if (!prefs.getBoolean("watch_active", false)) return
+    if (!prefs.getBoolean("session_active", false)) {
+      prefs.edit()
+        .putBoolean("watch_active", false)
+        .putBoolean("session_active", false)
+        .apply()
+      return
+    }
     mode = TrackingMode.entries.find { it.name == prefs.getString("watch_mode", "fitness") } ?: TrackingMode.fitness
     intervalMs = prefs.getLong("watch_interval", 3000L)
     distanceMeters = prefs.getFloat("watch_distance", 5f)
     isWatching = true
     Log.d(TAG, "watch_restore mode=${mode.name}")
     startUpdates()
+  }
+
+  /** Cold launch: restore only for a legitimate in-flight workout; otherwise hard-idle. */
+  private fun reconcileWatchStateOnColdLaunch() {
+    val hadWatch = prefs.getBoolean("watch_active", false)
+    val sessionActive = prefs.getBoolean("session_active", false)
+    if (hadWatch && sessionActive) {
+      restoreWatchIfNeeded()
+      return
+    }
+    watchIds.clear()
+    stopUpdatesInternal(keepWatchState = false)
   }
 
   /**
@@ -658,6 +711,10 @@ class LocationEngine private constructor(
     this.isWatching = true
     Log.i(TAG, "restoreWatchFromCrash mode=${mode.name} interval=${intervalMs}ms")
     startUpdates()
+    prefs.edit()
+      .putBoolean("watch_active", true)
+      .putBoolean("session_active", true)
+      .apply()
     // Re-arm watchdog for continued crash recovery
     TrackingRestartWorker.schedule(context)
   }
@@ -677,6 +734,7 @@ class LocationEngine private constructor(
   fun createSession(name: String, activityType: String, extras: String?): String {
     val id = database.createSession(name, activityType, extras)
     currentSessionId = id
+    currentActivityType = activityType
     currentSessionStartTime = System.currentTimeMillis()
     cumulativeDistance = 0.0
     lastProcessedLocation = null
@@ -761,6 +819,12 @@ class LocationEngine private constructor(
           val ids = watchIds.toList()
           listenerSnapshot().forEach { it.onLocationPersisted(stored, ids, true) }
         }
+
+        emitDiagnostic(mapOf("event" to "location", "location" to stored.toHttpMap()))
+        geofenceManager.updateDeviceLocation(stored.latitude, stored.longitude)
+        geofenceManager.evaluatePolygons(stored.latitude, stored.longitude)
+        scheduleManager.evaluate()
+        triggerAutoSyncIfNeeded()
       }
     }
   }
@@ -997,6 +1061,9 @@ class LocationEngine private constructor(
   private fun android.location.Location.toStored(delivered: Boolean): StoredLocation {
     val acc = if (hasAccuracy()) accuracy else 999f
     val bat = batteryLevel()
+    val positionConfidence = (1.0 - (acc / 100.0)).coerceIn(0.0, 1.0)
+    val motionConfidence = (currentConfidence / 100.0).coerceIn(0.0, 1.0)
+    val qualityJson = "{\"positionConfidence\":$positionConfidence,\"motionConfidence\":$motionConfidence,\"headingConfidence\":0.5,\"activityConfidence\":$motionConfidence}"
     return StoredLocation(
       id = java.util.UUID.randomUUID().toString(),
       latitude = latitude,
@@ -1010,6 +1077,7 @@ class LocationEngine private constructor(
       deliveredToJs = delivered,
       signalStrength = signalStrength(acc),
       batteryLevel = bat,
+      qualityJson = qualityJson,
     )
   }
 
@@ -1039,6 +1107,36 @@ class LocationEngine private constructor(
   var httpBatchSize: Int = 100
   var httpRetryCount: Int = 3
   var httpListenerEnabled: Boolean = false
+  var httpAutoSyncThreshold: Int = 0
+  private var httpPendingSinceSync = 0
+
+  // Background engine state
+  var isEngineEnabled = false
+  var geofencesOnlyMode = false
+  var isMoving = true
+  var scheduleRecords: List<String> = emptyList()
+  private var heartbeatHandler: android.os.Handler? = null
+  private var heartbeatRunnable: Runnable? = null
+
+  init {
+    geofenceManager.onGeofenceEvent = { id, action, data ->
+      emitGeofenceEvent(id, action, data)
+    }
+    geofenceManager.onGeofencesChange = { on, off ->
+      emitGeofencesChange(on, off)
+    }
+    scheduleManager.onScheduleChange = { enabled, mode ->
+      geofencesOnlyMode = mode == ScheduleManager.TrackingMode.geofence
+      if (enabled && mode == ScheduleManager.TrackingMode.location && !isWatching) {
+        watchPosition(emptyMap())
+      } else if (!enabled) {
+        stopObserving()
+      }
+      emitDiagnostic(mapOf("event" to "schedule", "enabled" to enabled, "mode" to mode.name.lowercase()))
+    }
+    providerMonitor.onEvent = { event -> listenerSnapshot().forEach { it.onDiagnostic(event) } }
+    providerMonitor.start()
+  }
 
   /** Trigger HTTP sync of all pending locations */
   fun httpSync(): List<Map<String, Any?>> {
@@ -1084,13 +1182,14 @@ class LocationEngine private constructor(
         Log.d(TAG, "http_sync_success: ${points.size} points, status=$responseCode")
 
         if (httpListenerEnabled) {
-          val event = mapOf(
-            "success" to true,
-            "status" to responseCode,
-            "responseText" to responseText,
-            "locationCount" to points.size,
-          )
-          listenerSnapshot().forEach { it.onDiagnostic(Arguments.makeNativeMap(event)) }
+          val event = Arguments.createMap().apply {
+            putString("event", "httpResponse")
+            putBoolean("success", true)
+            putInt("status", responseCode)
+            putString("responseText", responseText)
+            putInt("locationCount", points.size)
+          }
+          listenerSnapshot().forEach { it.onDiagnostic(event) }
         }
 
         return points.map { it.toHttpMap() }
@@ -1140,46 +1239,199 @@ class LocationEngine private constructor(
     "batteryLevel" to batteryLevel,
   )
 
-  // ─── Geofencing ────────────────────────────────────────────────────────────
+  // ─── Geofencing (GeofencingClient) ─────────────────────────────────────────
 
-  private val geofenceStore = mutableMapOf<String, Map<String, Any?>>()
+  fun addGeofence(data: Map<String, Any?>): Boolean = geofenceManager.addGeofence(data)
 
-  fun addGeofence(data: Map<String, Any?>): Boolean {
-    val id = data["identifier"] as? String ?: return false
-    geofenceStore[id] = data
-    Log.d(TAG, "geofence_added: $id")
+  fun addGeofences(list: List<Map<String, Any?>>): Boolean = geofenceManager.addGeofences(list)
 
-    // Emit geofencesChange event
-    listenerSnapshot().forEach { it.onDiagnostic(Arguments.makeNativeMap(mapOf(
-      "event" to "geofenceAdded",
-      "identifier" to id,
-    ))) }
-    return true
-  }
-
-  fun addGeofences(list: List<Map<String, Any?>>): Boolean {
-    list.forEach { addGeofence(it) }
-    return true
-  }
-
-  fun removeGeofence(identifier: String): Boolean {
-    geofenceStore.remove(identifier)
-    Log.d(TAG, "geofence_removed: $identifier")
-    return true
-  }
+  fun removeGeofence(identifier: String): Boolean = geofenceManager.removeGeofence(identifier)
 
   fun removeGeofences(identifiers: List<String>?): Boolean {
-    if (identifiers != null) {
-      identifiers.forEach { geofenceStore.remove(it) }
-    } else {
-      geofenceStore.clear()
-    }
+    geofenceManager.removeGeofences(identifiers)
     return true
   }
 
-  fun getGeofences(): List<Map<String, Any?>> = geofenceStore.values.toList()
+  fun getGeofences(): List<Map<String, Any?>> = geofenceManager.getGeofences()
 
-  fun geofenceExists(identifier: String): Boolean = geofenceStore.containsKey(identifier)
+  fun geofenceExists(identifier: String): Boolean = geofenceManager.exists(identifier)
+
+  fun handleGeofenceTransition(identifier: String, transition: Int) {
+    geofenceManager.handleTransition(identifier, transition)
+  }
+
+  private fun emitGeofenceEvent(id: String, action: String, data: Map<String, Any?>) {
+    emitDiagnostic(mapOf(
+      "event" to "geofence",
+      "identifier" to id,
+      "action" to action,
+      "latitude" to data["latitude"],
+      "longitude" to data["longitude"],
+      "radius" to data["radius"],
+      "timestamp" to System.currentTimeMillis(),
+    ))
+  }
+
+  private fun emitGeofencesChange(on: List<String>, off: List<String>) {
+    emitDiagnostic(mapOf("event" to "geofencesChange", "on" to on, "off" to off))
+  }
+
+  private fun emitDiagnostic(data: Map<String, Any?>) {
+    listenerSnapshot().forEach { it.onDiagnostic(Arguments.makeNativeMap(data)) }
+  }
+
+  // ─── Background Lifecycle ──────────────────────────────────────────────────
+
+  fun ready(config: Map<String, Any?>): Map<String, Any> {
+    mergeConfig(config)
+    return getState()
+  }
+
+  fun mergeConfig(config: Map<String, Any?>) {
+    (config["trackingMode"] as? String)?.let { setModeString(it) }
+    applyLoggerFromConfig(config)
+    (config["url"] as? String)?.let { url ->
+      httpUrl = url
+      httpMethod = config["method"] as? String ?: "POST"
+      @Suppress("UNCHECKED_CAST")
+      httpHeaders = (config["headers"] as? Map<String, String>) ?: emptyMap()
+      httpAutoSync = config["autoSync"] as? Boolean ?: true
+      httpBatchSync = config["batchSync"] as? Boolean ?: true
+      httpBatchSize = (config["batchSize"] as? Number)?.toInt()
+        ?: (config["maxBatchSize"] as? Number)?.toInt() ?: 100
+      httpAutoSyncThreshold = (config["autoSyncThreshold"] as? Number)?.toInt() ?: 0
+      httpConfigured = true
+    }
+    (config["schedule"] as? List<*>)?.let { list ->
+      scheduleRecords = list.mapNotNull { it as? String }
+      scheduleManager.configure(scheduleRecords)
+    }
+  }
+
+  fun getState(): Map<String, Any> {
+    val state = mutableMapOf<String, Any>(
+      "enabled" to isEngineEnabled,
+      "isMoving" to isMoving,
+      "tracking" to isWatching,
+      "mode" to mode.name,
+      "pending" to database.pendingCount(),
+      "odometer" to cumulativeDistance,
+    )
+    state.putAll(scheduleManager.stateMap())
+    return state
+  }
+
+  fun startEngine() {
+    if (!isWatching) watchPosition(emptyMap())
+    isEngineEnabled = true
+    emitDiagnostic(mapOf("event" to "enabledchange", "enabled" to true))
+  }
+
+  fun stopEngine() {
+    stopObserving()
+    emitDiagnostic(mapOf("event" to "enabledchange", "enabled" to false))
+  }
+
+  fun changePace(moving: Boolean) {
+    isMoving = moving
+    if (moving) onMotionResume() else onStationaryAutoPause()
+    emitDiagnostic(mapOf("event" to "motionchange", "isMoving" to moving))
+  }
+
+  fun startSchedule() {
+    scheduleManager.configure(scheduleRecords)
+    scheduleManager.start()
+  }
+
+  fun stopSchedule() = scheduleManager.stop()
+
+  fun startGeofencesMode() {
+    geofencesOnlyMode = true
+    stopObserving()
+    nativeLogger.log("INFO", "geofences-only mode started")
+  }
+
+  fun getLocations(limit: Int = 1000): List<Map<String, Any?>> =
+    database.getAllLocations(limit).map { it.toHttpMap() }
+
+  fun destroyLocation(uuid: String): Boolean = database.destroyLocation(uuid)
+
+  fun insertLocation(params: Map<String, Any?>): String? {
+    val lat = (params["latitude"] as? Number)?.toDouble() ?: return null
+    val lng = (params["longitude"] as? Number)?.toDouble() ?: return null
+    val stored = StoredLocation(
+      id = java.util.UUID.randomUUID().toString(),
+      latitude = lat,
+      longitude = lng,
+      accuracy = (params["accuracy"] as? Number)?.toFloat() ?: 10f,
+      speed = (params["speed"] as? Number)?.toFloat() ?: 0f,
+      heading = (params["heading"] as? Number)?.toFloat() ?: 0f,
+      altitude = (params["altitude"] as? Number)?.toDouble() ?: 0.0,
+      timestamp = (params["timestamp"] as? Number)?.toLong() ?: System.currentTimeMillis(),
+      sessionId = currentSessionId ?: "default",
+    )
+    if (!database.insert(stored)) return null
+    triggerAutoSyncIfNeeded()
+    return stored.id
+  }
+
+  fun getNativeLog(query: Map<String, Any?>): String {
+    val start = (query["start"] as? Number)?.toLong()
+    val end = (query["end"] as? Number)?.toLong()
+    val order = (query["order"] as? Number)?.toInt() ?: 1
+    val limit = (query["limit"] as? Number)?.toInt() ?: 1000
+    return nativeLogger.getLog(start, end, order, limit)
+  }
+
+  fun destroyNativeLog() = nativeLogger.destroyLog()
+
+  fun nativeLog(level: String, message: String) = nativeLogger.log(level, message)
+
+  fun configureLogger(logLevel: Int, logMaxDays: Int) = nativeLogger.configure(logLevel, logMaxDays)
+
+  @Suppress("UNCHECKED_CAST")
+  private fun applyLoggerFromConfig(config: Map<String, Any?>) {
+    val source = (config["logger"] as? Map<String, Any?>) ?: config
+    val level = (source["logLevel"] as? Number)?.toInt()
+    val maxDays = (source["logMaxDays"] as? Number)?.toInt()
+    if (level != null || maxDays != null) {
+      configureLogger(level ?: 0, maxDays ?: 3)
+    }
+    val debug = (source["debug"] as? Boolean) ?: (config["debug"] as? Boolean) ?: false
+    if (debug) nativeLogger.log("INFO", "SDK ready (debug)")
+  }
+
+  fun uploadLog(url: String, query: Map<String, Any?>): Boolean {
+    val body = getNativeLog(query)
+    return try {
+      val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+      conn.requestMethod = "POST"
+      conn.doOutput = true
+      conn.setRequestProperty("Content-Type", "text/plain")
+      conn.outputStream.use { it.write(body.toByteArray()) }
+      val ok = conn.responseCode in 200..299
+      conn.disconnect()
+      ok
+    } catch (_: Exception) { false }
+  }
+
+  fun httpSyncAll(): List<Map<String, Any?>> {
+    val all = mutableListOf<Map<String, Any?>>()
+    repeat(20) {
+      val batch = httpSync()
+      if (batch.isEmpty()) return@repeat
+      all.addAll(batch)
+    }
+    return all
+  }
+
+  private fun triggerAutoSyncIfNeeded() {
+    if (!httpConfigured || !httpAutoSync || httpUrl == null) return
+    httpPendingSinceSync++
+    if (httpAutoSyncThreshold > 0 && httpPendingSinceSync < httpAutoSyncThreshold) return
+    httpPendingSinceSync = 0
+    Thread { httpSyncAll() }.start()
+  }
 
   // ─── Provider State & Power Save ──────────────────────────────────────────
 

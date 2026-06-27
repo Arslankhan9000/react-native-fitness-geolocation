@@ -172,6 +172,9 @@ protocol HeartbeatEngineDelegate: AnyObject {
 class DebugNotificationManager {
   private var currentActivityText: String = "Stationary"
   private let oslog = OSLog(subsystem: "com.fitnessgeolocation", category: "debug-notif")
+  private var lastPostedAt: TimeInterval = 0
+  private var lastBody: String?
+  var debounceMs: Double = 1500
 
   func updateActivityText(_ text: String) {
     currentActivityText = text
@@ -180,6 +183,9 @@ class DebugNotificationManager {
   func getActivityText() -> String { currentActivityText }
 
   func postLocalNotification(title: String, body: String) {
+    let now = Date().timeIntervalSince1970 * 1000
+    if body == lastBody && now - lastPostedAt < debounceMs { return }
+    if now - lastPostedAt < debounceMs { return }
     let content = UNMutableNotificationContent()
     content.title = title
     content.body = body
@@ -196,6 +202,8 @@ class DebugNotificationManager {
         os_log(.error, log: self.oslog, "notification_error: %@", error.localizedDescription)
       }
     }
+    lastPostedAt = now
+    lastBody = body
   }
 
   func updateAndroidNotification(text: String) {
@@ -208,6 +216,11 @@ class DebugNotificationManager {
 class DebugSoundManager {
   private let oslog = OSLog(subsystem: "com.fitnessgeolocation", category: "debug-sound")
   var soundEnabled = true
+  var vibrationEnabled = false
+  var feedbackThrottleMs: Double = 1500
+
+  private var lastPlayedAt: [String: TimeInterval] = [:]
+  private var lastAnyAt: TimeInterval = 0
 
   /// System sound IDs mapped to lifecycle events
   private let soundMap: [String: UInt32] = [
@@ -225,10 +238,31 @@ class DebugSoundManager {
 
   func play(_ sound: String) {
     guard soundEnabled else { return }
+    let now = Date().timeIntervalSince1970 * 1000
+    let min: Double
+    switch sound {
+    case "heartbeat": min = 15_000
+    case "location_recorded": min = 4_000
+    case "location_error": min = 3_000
+    default: min = feedbackThrottleMs
+    }
+    if let last = lastPlayedAt[sound], now - last < min { return }
+    if now - lastAnyAt < (feedbackThrottleMs / 2) { return }
     if let soundId = soundMap[sound] {
       AudioServicesPlaySystemSound(soundId)
       os_log(.debug, log: oslog, "sound: %@ (id: %d)", sound, soundId)
+      lastPlayedAt[sound] = now
+      lastAnyAt = now
     }
+  }
+
+  func vibrate(_ kind: String) {
+    guard vibrationEnabled else { return }
+    let now = Date().timeIntervalSince1970 * 1000
+    let key = "v:\(kind)"
+    if let last = lastPlayedAt[key], now - last < feedbackThrottleMs { return }
+    AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
+    lastPlayedAt[key] = now
   }
 }
 
@@ -284,6 +318,12 @@ class DebugMonitor: NSObject {
     if let sound = config["sound"] as? Bool {
       sounds.soundEnabled = sound
     }
+    if let vib = config["vibration"] as? Bool {
+      sounds.vibrationEnabled = vib
+    }
+    if let throttle = config["feedbackThrottleMs"] as? NSNumber {
+      sounds.feedbackThrottleMs = throttle.doubleValue
+    }
 
     // Notification text templates
     if let text = config["notificationTextStationary"] as? String { notificationTexts["stationary"] = text }
@@ -295,12 +335,17 @@ class DebugMonitor: NSObject {
     if let title = config["notificationTitle"] as? String {
       UserDefaults.standard.set(title, forKey: "notification_title")
     }
+    if let debounce = config["notificationDebounceMs"] as? NSNumber {
+      notifications.debounceMs = debounce.doubleValue
+    }
 
     let wasEnabled = enabled
     enabled = config["enabled"] as? Bool ?? wasEnabled
 
     if enabled {
+      requestNotificationPermissionIfNeeded()
       heartbeat.start()
+      postDebugNotification(body: "Debug monitor configured")
       emitLifecycle("configured", "Debug monitor configured")
     } else {
       heartbeat.stop()
@@ -308,6 +353,26 @@ class DebugMonitor: NSObject {
 
     os_log(.debug, log: oslog, "configured enabled=%d stopTimeout=%.1fmin heartbeat=%.1fs",
            enabled, stateMachine.stopTimeoutMinutes, heartbeat.intervalSeconds)
+  }
+
+  /// Post a local notification for debug lifecycle (requires notification permission).
+  func postDebugNotification(body: String, title: String? = nil) {
+    guard enabled else { return }
+    let resolvedTitle = title
+      ?? UserDefaults.standard.string(forKey: "notification_title")
+      ?? "FitnessGeolocation"
+    notifications.postLocalNotification(title: resolvedTitle, body: body)
+  }
+
+  private func requestNotificationPermissionIfNeeded() {
+    UNUserNotificationCenter.current().getNotificationSettings { settings in
+      guard settings.authorizationStatus == .notDetermined else { return }
+      UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, error in
+        if let error = error {
+          os_log(.error, log: self.oslog, "notification_permission_error: %@", error.localizedDescription)
+        }
+      }
+    }
   }
 
   /// Feed motion activity into the state machine
@@ -355,6 +420,9 @@ class DebugMonitor: NSObject {
     payload["message"] = message
     payload["timestamp"] = Date().timeIntervalSince1970 * 1000
     delegate?.debugMonitor(self, didEmitLifecycleEvent: payload)
+    if enabled && event != "configured" {
+      postDebugNotification(body: message)
+    }
   }
 }
 
@@ -364,28 +432,33 @@ extension DebugMonitor: MotionStateMachineDelegate {
   func motionStateMachine(_ machine: MotionStateMachine, didChangeState state: MotionState, from oldState: MotionState, activity: String) {
     let payload = machine.toDictionary()
     delegate?.debugMonitor(self, didEmitMotionState: payload)
-    emitLifecycle("motionStateChange", "State: \(state.rawValue) — \(activity)", data: payload)
+    let msg = state == .moving
+      ? "Started moving — \(activity)"
+      : "Stopped — now stationary"
+    emitLifecycle("motionStateChange", msg, data: payload)
     updateNotificationText(for: activity)
   }
 
   func motionStateMachine(_ machine: MotionStateMachine, didFire event: String, message: String) {
     emitLifecycle(event, message)
-    if event == "stop_timeout_start" || event == "stop_timeout_cancel" {
-      notifications.postLocalNotification(title: "FitnessGeolocation", body: message)
-    }
   }
 
   func motionStateMachine(_ machine: MotionStateMachine, didPlaySound sound: String) {
     sounds.play(sound)
+    sounds.vibrate(sound)
   }
 }
 
 extension DebugMonitor: HeartbeatEngineDelegate {
   func heartbeatEngine(_ engine: HeartbeatEngine, didHeartbeat event: [String: Any]) {
     delegate?.debugMonitor(self, didEmitHeartbeat: event)
+    if enabled {
+      postDebugNotification(body: "GPS heartbeat — tracking active")
+    }
   }
 
   func heartbeatEngine(_ engine: HeartbeatEngine, didPlaySound sound: String) {
     sounds.play(sound)
+    sounds.vibrate(sound)
   }
 }

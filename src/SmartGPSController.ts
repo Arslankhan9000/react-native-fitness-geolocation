@@ -1,7 +1,7 @@
-import { NativeModules } from 'react-native';
 import type { GpsStrength, GpsStrengthEvent, SmartGPSConfig } from './types';
+import { getFitnessGeolocationNative } from './native/getNativeModule';
 
-const Native = NativeModules.FitnessGeolocation;
+const Native = getFitnessGeolocationNative();
 
 type GpsStrengthCallback = (event: GpsStrengthEvent) => void;
 

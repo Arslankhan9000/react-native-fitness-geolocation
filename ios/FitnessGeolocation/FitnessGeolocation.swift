@@ -2,9 +2,10 @@ import Foundation
 import React
 
 @objc(FitnessGeolocation)
-class FitnessGeolocation: RCTEventEmitter, LocationEngineDelegate, MotionEngineDelegate, DebugMonitorDelegate {
+class FitnessGeolocation: RCTEventEmitter, LocationEngineDelegate, MotionEngineDelegate, DebugMonitorDelegate, PedometerEngineDelegate {
   private let engine = LocationEngine.shared
   private let motion = MotionEngine.shared
+  private let pedometer = PedometerEngine.shared
   private let debugMonitor: DebugMonitor = DebugMonitor()
   private var hasListeners = false
 
@@ -12,6 +13,7 @@ class FitnessGeolocation: RCTEventEmitter, LocationEngineDelegate, MotionEngineD
     super.init()
     engine.delegate = self
     motion.delegate = self
+    pedometer.delegate = self
     debugMonitor.delegate = self
   }
 
@@ -22,7 +24,9 @@ class FitnessGeolocation: RCTEventEmitter, LocationEngineDelegate, MotionEngineD
      "motionActivity", "motionSteps", "autoPause", "autoResume",
      "diagnostic", "timeBasedTick", "geofence", "geofencesChange",
      "providerChange", "powerSaveChange", "connectivityChange", "httpResponse",
-     "debugMotionState", "debugHeartbeat", "debugEnabledChange", "debugLifecycle"]
+     "location", "motionchange", "heartbeat", "schedule", "enabledchange",
+     "debugMotionState", "debugHeartbeat", "debugEnabledChange", "debugLifecycle",
+     "pedometerUpdate"]
   }
 
   override func startObserving() { hasListeners = true }
@@ -374,6 +378,16 @@ class FitnessGeolocation: RCTEventEmitter, LocationEngineDelegate, MotionEngineD
     resolve(nil)
   }
 
+  @objc(configureLogger:resolver:rejecter:)
+  func configureLogger(_ config: NSDictionary, resolver resolve: @escaping RCTPromiseResolveBlock,
+                       rejecter reject: @escaping RCTPromiseRejectBlock) {
+    let dict = config as? [String: Any] ?? [:]
+    let level = (dict["logLevel"] as? NSNumber)?.intValue ?? (dict["logLevel"] as? Int) ?? 0
+    let maxDays = (dict["logMaxDays"] as? NSNumber)?.intValue ?? (dict["logMaxDays"] as? Int) ?? 3
+    engine.configureLogger(logLevel: level, logMaxDays: maxDays)
+    resolve(nil)
+  }
+
   @objc(getDebugMotionState:rejecter:)
   func getDebugMotionState(_ resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
     resolve(debugMonitor.getMotionState())
@@ -405,6 +419,7 @@ class FitnessGeolocation: RCTEventEmitter, LocationEngineDelegate, MotionEngineD
 
   func locationEngine(_ engine: LocationEngine, didPersist location: StoredLocation,
                       watchIds: [Int], deliverLive: Bool) {
+    debugMonitor.feedSpeed(Double(location.speed))
     guard hasListeners, deliverLive else { return }
     for watchId in watchIds {
       sendEvent(withName: "watchPosition", body: [
@@ -436,10 +451,32 @@ class FitnessGeolocation: RCTEventEmitter, LocationEngineDelegate, MotionEngineD
   }
 
   func locationEngine(_ engine: LocationEngine, didLog event: [String: Any]) {
+    let eventName = event["event"] as? String ?? ""
+    if debugMonitor.enabled {
+      switch eventName {
+      case "watch-start":
+        debugMonitor.postDebugNotification(body: "GPS watch started")
+      case "watch-stop", "stop-observing":
+        debugMonitor.postDebugNotification(body: "GPS watch stopped")
+      case "gps-pause":
+        debugMonitor.postDebugNotification(body: "GPS paused")
+      case "gps-resume":
+        debugMonitor.postDebugNotification(body: "GPS resumed")
+      case "watch-restore":
+        debugMonitor.postDebugNotification(body: "GPS watch restored after relaunch")
+      case "foreground":
+        debugMonitor.postDebugNotification(body: "App foreground — pending: \(event["pending"] ?? 0)")
+      case "terminate":
+        debugMonitor.postDebugNotification(body: "App terminating — geofence armed")
+      default:
+        break
+      }
+    }
+
     guard hasListeners else { return }
 
-    // Route geofence events to their own channel
-    if event["event"] as? String == "geofence" {
+    switch eventName {
+    case "geofence":
       sendEvent(withName: "geofence", body: [
         "identifier": event["identifier"] ?? "",
         "action": event["action"] ?? "",
@@ -448,10 +485,26 @@ class FitnessGeolocation: RCTEventEmitter, LocationEngineDelegate, MotionEngineD
         "radius": event["radius"] ?? 0,
         "timestamp": event["timestamp"] ?? Date().timeIntervalSince1970 * 1000,
       ])
-      return
+    case "geofencesChange":
+      sendEvent(withName: "geofencesChange", body: [
+        "on": event["on"] ?? [],
+        "off": event["off"] ?? [],
+      ])
+    case "httpResponse":
+      sendEvent(withName: "httpResponse", body: event)
+    case "location":
+      sendEvent(withName: "location", body: event["location"] ?? event)
+    case "motionchange":
+      sendEvent(withName: "motionchange", body: event)
+    case "heartbeat":
+      sendEvent(withName: "heartbeat", body: event)
+    case "schedule":
+      sendEvent(withName: "schedule", body: event)
+    case "enabledchange":
+      sendEvent(withName: "enabledchange", body: event)
+    default:
+      sendEvent(withName: "diagnostic", body: event)
     }
-
-    sendEvent(withName: "diagnostic", body: event)
   }
 
   func locationEngine(_ engine: LocationEngine, didTimeBasedTick location: StoredLocation) {
@@ -500,6 +553,211 @@ class FitnessGeolocation: RCTEventEmitter, LocationEngineDelegate, MotionEngineD
     LocationEngine.shared.onMotionResume()
     guard hasListeners else { return }
     sendEvent(withName: "autoResume", body: ["reason": "movement"])
+  }
+
+  // MARK: - Pedometer
+
+  @objc(pedometerIsSupported:rejecter:)
+  func pedometerIsSupported(_ resolve: @escaping RCTPromiseResolveBlock,
+                            rejecter reject: @escaping RCTPromiseRejectBlock) {
+    resolve([
+      "supported": pedometer.isSupported(),
+      "granted": pedometer.isAuthorized(),
+      "status": pedometer.authorizationStatusString(),
+      "platform": "ios",
+    ])
+  }
+
+  @objc(pedometerStart:resolver:rejecter:)
+  func pedometerStart(_ sessionId: NSString?,
+                      resolver resolve: @escaping RCTPromiseResolveBlock,
+                      rejecter reject: @escaping RCTPromiseRejectBlock) {
+    let sid = sessionId as String?
+    pedometer.start(sessionId: sid) { result in
+      switch result {
+      case .success(let snap): resolve(snap)
+      case .failure(let e): reject("PEDOMETER_ERROR", e.localizedDescription, e)
+      }
+    }
+  }
+
+  @objc(pedometerStop:rejecter:)
+  func pedometerStop(_ resolve: @escaping RCTPromiseResolveBlock,
+                     rejecter reject: @escaping RCTPromiseRejectBlock) {
+    pedometer.stop { snap in resolve(snap) }
+  }
+
+  @objc(pedometerGetSnapshot:rejecter:)
+  func pedometerGetSnapshot(_ resolve: @escaping RCTPromiseResolveBlock,
+                            rejecter reject: @escaping RCTPromiseRejectBlock) {
+    resolve(pedometer.snapshot())
+  }
+
+  @objc(pedometerQuery:toMs:resolver:rejecter:)
+  func pedometerQuery(_ fromMs: NSNumber, toMs: NSNumber,
+                      resolver resolve: @escaping RCTPromiseResolveBlock,
+                      rejecter reject: @escaping RCTPromiseRejectBlock) {
+    pedometer.query(fromMs: fromMs.doubleValue, toMs: toMs.doubleValue) { result in
+      switch result {
+      case .success(let data): resolve(data)
+      case .failure(let e): reject("PEDOMETER_QUERY", e.localizedDescription, e)
+      }
+    }
+  }
+
+  @objc(pedometerOnAppForeground)
+  func pedometerOnAppForeground() {
+    pedometer.onAppForeground()
+  }
+
+  @objc(pedometerGetDiagnostics:rejecter:)
+  func pedometerGetDiagnostics(_ resolve: @escaping RCTPromiseResolveBlock,
+                               rejecter reject: @escaping RCTPromiseRejectBlock) {
+    resolve(pedometer.getDiagnostics())
+  }
+
+  func pedometerEngine(_ engine: PedometerEngine, didUpdate payload: [String: Any]) {
+    guard hasListeners else { return }
+    sendEvent(withName: "pedometerUpdate", body: payload)
+  }
+
+  // MARK: - Background Engine API
+
+  @objc(ready:resolver:rejecter:)
+  func ready(_ config: NSDictionary,
+             resolver resolve: @escaping RCTPromiseResolveBlock,
+             rejecter reject: @escaping RCTPromiseRejectBlock) {
+    resolve(engine.ready(config as? [String: Any] ?? [:]))
+  }
+
+  @objc(setConfig:resolver:rejecter:)
+  func setConfig(_ config: NSDictionary,
+                 resolver resolve: @escaping RCTPromiseResolveBlock,
+                 rejecter reject: @escaping RCTPromiseRejectBlock) {
+    engine.mergeConfig(config as? [String: Any] ?? [:])
+    resolve(engine.getState())
+  }
+
+  @objc(getState:rejecter:)
+  func getState(_ resolve: @escaping RCTPromiseResolveBlock,
+                rejecter reject: @escaping RCTPromiseRejectBlock) {
+    resolve(engine.getState())
+  }
+
+  @objc(start:rejecter:)
+  func start(_ resolve: @escaping RCTPromiseResolveBlock,
+             rejecter reject: @escaping RCTPromiseRejectBlock) {
+    engine.startEngine()
+    resolve(engine.getState())
+  }
+
+  @objc(stop:rejecter:)
+  func stop(_ resolve: @escaping RCTPromiseResolveBlock,
+            rejecter reject: @escaping RCTPromiseRejectBlock) {
+    engine.stopEngine()
+    resolve(engine.getState())
+  }
+
+  @objc(changePace:resolver:rejecter:)
+  func changePace(_ moving: Bool,
+                  resolver resolve: @escaping RCTPromiseResolveBlock,
+                  rejecter reject: @escaping RCTPromiseRejectBlock) {
+    engine.changePace(moving)
+    resolve(nil)
+  }
+
+  @objc(startSchedule:rejecter:)
+  func startSchedule(_ resolve: @escaping RCTPromiseResolveBlock,
+                     rejecter reject: @escaping RCTPromiseRejectBlock) {
+    engine.startSchedule()
+    resolve(nil)
+  }
+
+  @objc(stopSchedule:rejecter:)
+  func stopSchedule(_ resolve: @escaping RCTPromiseResolveBlock,
+                    rejecter reject: @escaping RCTPromiseRejectBlock) {
+    engine.stopSchedule()
+    resolve(nil)
+  }
+
+  @objc(startGeofences:rejecter:)
+  func startGeofences(_ resolve: @escaping RCTPromiseResolveBlock,
+                      rejecter reject: @escaping RCTPromiseRejectBlock) {
+    engine.startGeofencesMode()
+    resolve(nil)
+  }
+
+  @objc(sync:rejecter:)
+  func sync(_ resolve: @escaping RCTPromiseResolveBlock,
+            rejecter reject: @escaping RCTPromiseRejectBlock) {
+    engine.httpSyncAsync { results in resolve(results) }
+  }
+
+  @objc(getLocations:rejecter:)
+  func getLocations(_ resolve: @escaping RCTPromiseResolveBlock,
+                    rejecter reject: @escaping RCTPromiseRejectBlock) {
+    resolve(engine.getLocations())
+  }
+
+  @objc(destroyLocation:resolver:rejecter:)
+  func destroyLocation(_ uuid: String,
+                       resolver resolve: @escaping RCTPromiseResolveBlock,
+                       rejecter reject: @escaping RCTPromiseRejectBlock) {
+    resolve(engine.destroyLocation(uuid))
+  }
+
+  @objc(insertLocation:resolver:rejecter:)
+  func insertLocation(_ params: NSDictionary,
+                      resolver resolve: @escaping RCTPromiseResolveBlock,
+                      rejecter reject: @escaping RCTPromiseRejectBlock) {
+    resolve(engine.insertLocation(params as? [String: Any] ?? [:]))
+  }
+
+  @objc(getLog:resolver:rejecter:)
+  func getLog(_ query: NSDictionary?,
+              resolver resolve: @escaping RCTPromiseResolveBlock,
+              rejecter reject: @escaping RCTPromiseRejectBlock) {
+    resolve(engine.getNativeLog(query: query as? [String: Any] ?? [:]))
+  }
+
+  @objc(destroyLog:rejecter:)
+  func destroyLog(_ resolve: @escaping RCTPromiseResolveBlock,
+                  rejecter reject: @escaping RCTPromiseRejectBlock) {
+    engine.destroyNativeLog()
+    resolve(nil)
+  }
+
+  @objc(log:message:resolver:rejecter:)
+  func log(_ level: String, message: String,
+           resolver resolve: @escaping RCTPromiseResolveBlock,
+           rejecter reject: @escaping RCTPromiseRejectBlock) {
+    engine.nativeLog(level: level, message: message)
+    resolve(nil)
+  }
+
+  @objc(uploadLog:query:resolver:rejecter:)
+  func uploadLog(_ url: String, query: NSDictionary?,
+                 resolver resolve: @escaping RCTPromiseResolveBlock,
+                 rejecter reject: @escaping RCTPromiseRejectBlock) {
+    engine.uploadLog(url: url, query: query as? [String: Any] ?? [:]) { ok, msg in
+      ok ? resolve(msg) : reject("UPLOAD_FAILED", msg, nil)
+    }
+  }
+
+  @objc(requestTemporaryFullAccuracy:resolver:rejecter:)
+  func requestTemporaryFullAccuracy(_ purpose: String,
+                                    resolver resolve: @escaping RCTPromiseResolveBlock,
+                                    rejecter reject: @escaping RCTPromiseRejectBlock) {
+    engine.requestTemporaryFullAccuracy(purpose: purpose) { resolve($0) }
+  }
+
+  @objc(reset:rejecter:)
+  func reset(_ resolve: @escaping RCTPromiseResolveBlock,
+             rejecter reject: @escaping RCTPromiseRejectBlock) {
+    engine.stopEngine()
+    engine.destroyAllLocations()
+    engine.destroyNativeLog()
+    resolve(nil)
   }
 
   // MARK: - Live Activities
@@ -567,8 +825,19 @@ class FitnessGeolocation: RCTEventEmitter, LocationEngineDelegate, MotionEngineD
       try? await LiveActivityManager.shared.endActivity(
         finalDistance: distance.doubleValue,
         finalDuration: duration.doubleValue,
-        finalCalories: calories.intValue
+        finalCalories: calories.intValue,
+        dismissImmediately: true
       )
+      resolve(nil)
+    }
+  }
+
+  @objc(dismissAllLiveActivities:rejecter:)
+  func dismissAllLiveActivities(_ resolve: @escaping RCTPromiseResolveBlock,
+                                rejecter reject: @escaping RCTPromiseRejectBlock) {
+    guard #available(iOS 16.1, *) else { return resolve(nil) }
+    Task { @MainActor in
+      await LiveActivityManager.shared.dismissAllActivities(immediate: true)
       resolve(nil)
     }
   }

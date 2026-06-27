@@ -1,18 +1,20 @@
-export { default as Geolocation, default as BackgroundGeolocation, default } from './Geolocation';
-export { PermissionManager } from './PermissionManager';
-export { MotionEngine } from './MotionEngine';
-export { FitnessEngine, createFitnessEngine } from './FitnessEngine';
-export { ActivityManager, createActivityManager } from './ActivityManager';
-export { TimeBasedTracker, timeBasedTracker } from './TimeBasedTracker';
-export { SmartGPSController, smartGPSController } from './SmartGPSController';
-export { OEMBatteryManager } from './OEMBatteryManager';
-export { registerHeadlessTask, isHeadlessTaskRegistered } from './HeadlessTask';
-export { HttpSync, httpSync } from './HttpSync';
-export { Geofencing, geofencing } from './Geofencing';
-export { ProviderEvents } from './ProviderEvents';
-export { DebugMonitor, debugMonitor } from './DebugMonitor';
-export { FitnessTrackingService } from './FitnessTrackingService';
-export { default as fitnessTrackingService } from './FitnessTrackingService';
-export { LiveActivity } from './LiveActivity';
-export { PositionError } from './types';
-export type * from './types';
+/**
+ * Full package barrel — backward compatible default import.
+ *
+ * Prefer subpath imports for smaller JS bundles:
+ *   `react-native-fitness-geolocation/pedometer`
+ *   `react-native-fitness-geolocation/geolocation`
+ *   etc.
+ */
+export * from './subsystems/core';
+export * from './subsystems/geolocation';
+export * from './subsystems/pedometer';
+export * from './subsystems/geofence';
+export * from './subsystems/activity';
+export * from './subsystems/sync';
+export * from './subsystems/diagnostics';
+export { SUBSYSTEMS, NATIVE_LINKING_NOTE } from './subsystems/registry';
+export type { SubsystemId } from './subsystems/registry';
+
+// Default export = Geolocation (unchanged)
+export { default } from './Geolocation';

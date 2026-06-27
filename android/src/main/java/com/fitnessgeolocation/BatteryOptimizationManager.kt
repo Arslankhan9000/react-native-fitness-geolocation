@@ -53,11 +53,19 @@ object BatteryOptimizationManager {
    */
   @RequiresApi(Build.VERSION_CODES.M)
   fun canRequestBatteryOptimization(context: Context): Boolean {
-    // Check if permission declared in manifest
     val pm = context.packageManager
-    val info = pm.getPackageInfo(context.packageName, android.content.pm.PackageManager.GET_PERMISSIONS)
+    val info = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      pm.getPackageInfo(
+        context.packageName,
+        android.content.pm.PackageManager.PackageInfoFlags.of(
+          android.content.pm.PackageManager.GET_PERMISSIONS.toLong(),
+        ),
+      )
+    } else {
+      @Suppress("DEPRECATION")
+      pm.getPackageInfo(context.packageName, android.content.pm.PackageManager.GET_PERMISSIONS)
+    }
     val permissions = info.requestedPermissions ?: return false
-    
     return permissions.contains(android.Manifest.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
   }
 

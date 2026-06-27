@@ -1,4 +1,4 @@
-import { NativeEventEmitter, NativeModules, Platform } from 'react-native';
+import { NativeEventEmitter, Platform } from 'react-native';
 import type {
   TimeBasedLocation,
   TimeBasedOptions,
@@ -6,14 +6,9 @@ import type {
   MotionActivityType,
   LocationSubscription,
 } from './types';
+import { getFitnessGeolocationNative } from './native/getNativeModule';
 
-const LINKING_ERROR =
-  `The package 'react-native-fitness-geolocation' doesn't seem to be linked. ` +
-  'Run pod install (iOS) and rebuild the app.';
-
-const Native = NativeModules.FitnessGeolocation
-  ? NativeModules.FitnessGeolocation
-  : new Proxy({}, { get() { throw new Error(LINKING_ERROR); } });
+const Native = getFitnessGeolocationNative();
 
 const emitter = new NativeEventEmitter(Native);
 
@@ -231,6 +226,14 @@ export class TimeBasedTracker {
     if (lat === 0 && lng === 0) return null;
     if (accuracy <= 0 || accuracy > this.maxAccuracy) return null;
 
+    let quality: any = undefined;
+    const rawQuality = event.quality;
+    if (typeof rawQuality === 'string') {
+      try { quality = JSON.parse(rawQuality); } catch {}
+    } else if (rawQuality && typeof rawQuality === 'object') {
+      quality = rawQuality;
+    }
+
     return {
       coords: {
         latitude: lat,
@@ -248,6 +251,7 @@ export class TimeBasedTracker {
       cumulativeDistance: Number(event.cumulativeDistance ?? 0),
       batteryLevel: Number(event.batteryLevel ?? -1),
       motionState: (event.motionState as MotionActivityType) ?? 'unknown',
+      quality,
     };
   }
 }

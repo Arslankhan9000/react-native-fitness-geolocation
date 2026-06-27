@@ -1,13 +1,23 @@
 # react-native-fitness-geolocation
 
-Production-grade React Native GPS for **fitness and activity tracking** apps — background location, native SQLite persistence, and optional motion auto-pause.
+Production-grade React Native GPS for **fitness and activity tracking** apps — background location, native SQLite persistence, motion auto-pause, and Live Activities.
 
-Drop-in replacement for `@react-native-community/geolocation` with extensions for Strava/Nike-class reliability.
+Built as an open-source (MIT) alternative to Transistorsoft `react-native-background-geolocation`, tailored specifically for high-frequency fitness apps (like Strava or Nike Run Club). 
 
 ```bash
 npm install react-native-fitness-geolocation
 cd ios && pod install
 ```
+
+## Why this package?
+
+Building a reliable background location tracking library for React Native is incredibly difficult due to aggressive OS-level battery optimizations. This package solves the two hardest problems natively:
+
+1. **Native SQLite Persistence**: Both iOS and Android store coordinates natively first, then drain them to the JS thread. No data is lost if the React Native bridge crashes or is paused by the OS.
+2. **Battery-Conscious Motion Detection**: Includes native `MotionEngine`s (CoreMotion / Activity Recognition) that automatically suspend the GPS hardware when the user is stationary to save battery, waking it up when they resume moving.
+3. **Fitness-First**: Includes a C++ `TrackEngine` for high-performance distance filtering, an `IntelligentAutoPauseEngine` for cycling/running, and built-in support for iOS 16+ Live Activities.
+
+It offers two APIs: a standard drop-in replacement for `@react-native-community/geolocation`, and a powerful `BackgroundGeolocation` API for full workout orchestration.
 
 ## Platform support
 
@@ -217,11 +227,14 @@ See [docs/MIGRATION.md](./docs/MIGRATION.md) for options matrix and edge cases.
 | 2 | `POSITION_UNAVAILABLE` | GPS unavailable |
 | 3 | `TIMEOUT` | Request timed out |
 
-## Android background note
+## Android Background & OEM Devices
 
-For long sessions with the screen off, Android requires a **foreground service** with a persistent notification. This package now ships its own location foreground service, native GPS pipeline, and SQLite queue, so activity tracking does not depend on `react-native-background-geolocation` release builds.
+For long sessions with the screen off, Android requires a **foreground service** with a persistent notification. This package ships its own location foreground service, native GPS pipeline, and SQLite queue, so activity tracking does not depend on debug JS threads.
 
-For smooth workout polylines, prefer `enableHighAccuracy: true`, `distanceFilter: 0` to `5`, `trackingMode: 'fitness'`, and `pausesLocationUpdatesAutomatically: false`. iOS does not guarantee exact 1-second background callbacks; the package records every accepted native fix and replays missed JS callbacks from SQLite.
+For smooth workout polylines, prefer `enableHighAccuracy: true`, `distanceFilter: 0` to `5`, `trackingMode: 'fitness'`, and `pausesLocationUpdatesAutomatically: false`. 
+
+**A Note on OEM Fragmentation:**
+Android manufacturers (Samsung, Xiaomi, Huawei, OnePlus) employ aggressive, non-standard battery optimizations that often kill background services after 15-30 minutes. This package includes an `OemProfiles` manager and a `BatteryOptimizationManager` to mitigate this, but developers must be aware of OEM limits. You may still need to instruct users to disable "Battery Optimization" for your app in their device settings for flawless marathon tracking.
 
 ## Docs
 

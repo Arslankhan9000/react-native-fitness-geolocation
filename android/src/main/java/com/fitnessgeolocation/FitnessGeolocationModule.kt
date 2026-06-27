@@ -23,6 +23,10 @@ class FitnessGeolocationModule(private val reactContext: ReactApplicationContext
   PermissionListener,
   LifecycleEventListener {
 
+  companion object {
+    const val NAME = "FitnessGeolocation"
+  }
+
   private val engine = LocationEngine.getInstance(reactContext)
   private val debugMonitor = DebugMonitor(reactContext)
   private var authPromise: Promise? = null
@@ -30,8 +34,9 @@ class FitnessGeolocationModule(private val reactContext: ReactApplicationContext
   private var awaitingBackground = false
   private var isInBackground = false
   private var motionEngineStarted = false
+  private val pedometerEngine = PedometerEngine.getInstance(reactContext)
 
-  companion object {
+  private companion object {
     private const val REQUEST_FINE = 1001
     private const val REQUEST_BACKGROUND = 1002
     private const val TAG = "FitnessGeoModule"
@@ -40,6 +45,11 @@ class FitnessGeolocationModule(private val reactContext: ReactApplicationContext
   init {
     reactContext.addLifecycleEventListener(this)
     engine.addListener(this)
+    pedometerEngine.listener = object : PedometerEngine.Listener {
+      override fun onPedometerUpdate(payload: Map<String, Any?>) {
+        sendEvent("pedometerUpdate", Arguments.makeNativeMap(payload))
+      }
+    }
     debugMonitor.delegate = object : DebugMonitorDelegate {
       override fun onEnabledChange(enabled: Boolean) {
         val map = Arguments.createMap()
@@ -61,7 +71,7 @@ class FitnessGeolocationModule(private val reactContext: ReactApplicationContext
     }
   }
 
-  override fun getName(): String = "FitnessGeolocation"
+  override fun getName(): String = NAME
 
   @ReactMethod
   fun addListener(eventName: String) {}
@@ -541,11 +551,7 @@ class FitnessGeolocationModule(private val reactContext: ReactApplicationContext
     if (!hasFineLocation()) return
     val intent = Intent(reactContext, FitnessLocationService::class.java)
       .setAction(FitnessLocationService.ACTION_START)
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-      ContextCompat.startForegroundService(reactContext, intent)
-    } else {
-      reactContext.startService(intent)
-    }
+    PlatformCompat.startLocationForegroundService(reactContext, intent)
   }
 
   private fun stopForegroundTrackingService() {
@@ -612,7 +618,17 @@ class FitnessGeolocationModule(private val reactContext: ReactApplicationContext
   }
 
   override fun onDiagnostic(event: WritableMap) {
-    sendEvent("diagnostic", event)
+    when (event.getString("event")) {
+      "geofence" -> sendEvent("geofence", event)
+      "geofencesChange" -> sendEvent("geofencesChange", event)
+      "httpResponse" -> sendEvent("httpResponse", event)
+      "location" -> sendEvent("location", event)
+      "motionchange" -> sendEvent("motionchange", event)
+      "heartbeat" -> sendEvent("heartbeat", event)
+      "schedule" -> sendEvent("schedule", event)
+      "enabledchange" -> sendEvent("enabledchange", event)
+      else -> sendEvent("diagnostic", event)
+    }
   }
 
   override fun onTimeBasedTick(location: StoredLocation) {
@@ -737,6 +753,15 @@ class FitnessGeolocationModule(private val reactContext: ReactApplicationContext
   }
 
   @ReactMethod
+  fun configureLogger(config: ReadableMap, promise: Promise) {
+    val map = config.toHashMap()
+    val level = (map["logLevel"] as? Number)?.toInt() ?: 0
+    val maxDays = (map["logMaxDays"] as? Number)?.toInt() ?: 3
+    engine.configureLogger(level, maxDays)
+    promise.resolve(null)
+  }
+
+  @ReactMethod
   fun getDebugMotionState(promise: Promise) {
     promise.resolve(Arguments.makeNativeMap(debugMonitor.getMotionState()))
   }
@@ -769,15 +794,211 @@ class FitnessGeolocationModule(private val reactContext: ReactApplicationContext
     promise.resolve(map)
   }
 
+  // ─── Background Engine API ───────────────────────────────────────────────────────
+
+  @ReactMethod
+  fun ready(config: ReadableMap, promise: Promise) {
+    val map = config.toHashMap()
+    @Suppress("UNCHECKED_CAST")
+    if (map["schedule"] is List<*>) {
+      engine.scheduleRecords = (map["schedule"] as List<*>).mapNotNull { it as? String }
+    }
+    engine.httpAutoSyncThreshold = (map["autoSyncThreshold"] as? Double)?.toInt() ?: 0
+    promise.resolve(Arguments.makeNativeMap(engine.ready(map)))
+  }
+
+  @ReactMethod
+  fun setConfig(config: ReadableMap, promise: Promise) {
+    engine.mergeConfig(config.toHashMap())
+    promise.resolve(Arguments.makeNativeMap(engine.getState()))
+  }
+
+  @ReactMethod
+  fun getState(promise: Promise) {
+    promise.resolve(Arguments.makeNativeMap(engine.getState()))
+  }
+
+  @ReactMethod
+  fun start(promise: Promise) {
+    engine.startEngine()
+    startForegroundTrackingService()
+    promise.resolve(Arguments.makeNativeMap(engine.getState()))
+  }
+
+  @ReactMethod
+  fun stop(promise: Promise) {
+    engine.stopEngine()
+    stopForegroundTrackingService()
+    promise.resolve(Arguments.makeNativeMap(engine.getState()))
+  }
+
+  @ReactMethod
+  fun changePace(moving: Boolean, promise: Promise) {
+    engine.changePace(moving)
+    promise.resolve(null)
+  }
+
+  @ReactMethod
+  fun startSchedule(promise: Promise) {
+    engine.startSchedule()
+    promise.resolve(null)
+  }
+
+  @ReactMethod
+  fun stopSchedule(promise: Promise) {
+    engine.stopSchedule()
+    promise.resolve(null)
+  }
+
+  @ReactMethod
+  fun startGeofences(promise: Promise) {
+    engine.startGeofencesMode()
+    promise.resolve(null)
+  }
+
+  @ReactMethod
+  fun sync(promise: Promise) {
+    promise.resolve(Arguments.fromList(engine.httpSyncAll()))
+  }
+
+  @ReactMethod
+  fun getLocations(promise: Promise) {
+    promise.resolve(Arguments.fromList(engine.getLocations()))
+  }
+
+  @ReactMethod
+  fun destroyLocation(uuid: String, promise: Promise) {
+    promise.resolve(engine.destroyLocation(uuid))
+  }
+
+  @ReactMethod
+  fun insertLocation(params: ReadableMap, promise: Promise) {
+    promise.resolve(engine.insertLocation(params.toHashMap()))
+  }
+
+  @ReactMethod
+  fun getLog(query: ReadableMap?, promise: Promise) {
+    val q = query?.toHashMap() ?: emptyMap()
+    promise.resolve(engine.getNativeLog(q))
+  }
+
+  @ReactMethod
+  fun destroyLog(promise: Promise) {
+    engine.destroyNativeLog()
+    promise.resolve(null)
+  }
+
+  @ReactMethod
+  fun log(level: String, message: String, promise: Promise) {
+    engine.nativeLog(level, message)
+    promise.resolve(null)
+  }
+
+  @ReactMethod
+  fun uploadLog(url: String, query: ReadableMap?, promise: Promise) {
+    promise.resolve(engine.uploadLog(url, query?.toHashMap() ?: emptyMap()))
+  }
+
+  @ReactMethod
+  fun requestTemporaryFullAccuracy(purpose: String, promise: Promise) {
+    promise.reject("UNSUPPORTED", "requestTemporaryFullAccuracy is iOS-only")
+  }
+
+  @ReactMethod
+  fun reset(promise: Promise) {
+    engine.stopEngine()
+    engine.clearAll()
+    engine.destroyNativeLog()
+    promise.resolve(null)
+  }
+
+  @ReactMethod
+  fun setLiveActivityEnabled(enabled: Boolean) {
+    engine.setLiveActivityEnabled(enabled)
+  }
+
+  @ReactMethod
+  fun getLiveActivityEnabled(promise: Promise) {
+    promise.resolve(engine.isLiveActivityEnabled())
+  }
+
+  // ─── Pedometer (passive, no notification) ─────────────────────────────────
+
+  @ReactMethod
+  fun pedometerIsSupported(promise: Promise) {
+    val map = Arguments.createMap()
+    map.putBoolean("supported", pedometerEngine.isSupported())
+    map.putBoolean("granted", pedometerEngine.isAuthorized())
+    map.putString("status", pedometerEngine.authorizationStatus())
+    map.putString("platform", "android")
+    promise.resolve(map)
+  }
+
+  @ReactMethod
+  fun pedometerStart(sessionId: String?, promise: Promise) {
+    try {
+      val snap = pedometerEngine.start(sessionId)
+      promise.resolve(Arguments.makeNativeMap(snap))
+    } catch (e: SecurityException) {
+      promise.reject("PERMISSION_DENIED", e.message, e)
+    } catch (e: Exception) {
+      promise.reject("PEDOMETER_ERROR", e.message, e)
+    }
+  }
+
+  @ReactMethod
+  fun pedometerStop(promise: Promise) {
+    promise.resolve(Arguments.makeNativeMap(pedometerEngine.stop()))
+  }
+
+  @ReactMethod
+  fun pedometerGetSnapshot(promise: Promise) {
+    promise.resolve(Arguments.makeNativeMap(pedometerEngine.snapshot()))
+  }
+
+  @ReactMethod
+  fun pedometerOnAppForeground() {
+    pedometerEngine.onAppForeground()
+  }
+
+  @ReactMethod
+  fun pedometerGetDiagnostics(promise: Promise) {
+    val map = Arguments.createMap()
+    val diag = pedometerEngine.getDiagnostics()
+    for ((k, v) in diag) {
+      when (v) {
+        null -> map.putNull(k)
+        is Boolean -> map.putBoolean(k, v)
+        is Int -> map.putInt(k, v)
+        is Double -> map.putDouble(k, v)
+        is Float -> map.putDouble(k, v.toDouble())
+        is String -> map.putString(k, v)
+        else -> map.putString(k, v.toString())
+      }
+    }
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+      map.putBoolean(
+        "batteryOptimizationExempt",
+        BatteryOptimizationManager.isIgnoringBatteryOptimizations(reactContext),
+      )
+    } else {
+      map.putBoolean("batteryOptimizationExempt", true)
+    }
+    map.putBoolean("powerSaveMode", engine.isPowerSaveMode())
+    promise.resolve(map)
+  }
+
   // ─── Lifecycle ─────────────────────────────────────────────────────────────
 
   override fun onHostResume() {
     isInBackground = false
     engine.onHostResume()
+    pedometerEngine.onAppForeground()
   }
 
   override fun onHostPause() {
     isInBackground = true
+    engine.onHostPause()
   }
 
   override fun onHostDestroy() {

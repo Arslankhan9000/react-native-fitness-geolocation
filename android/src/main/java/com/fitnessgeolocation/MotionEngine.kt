@@ -119,11 +119,7 @@ class MotionEngine(
   private fun registerReceiver() {
     if (receiverRegistered) return
     val filter = IntentFilter(ACTION_ACTIVITY_DETECTED)
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-      context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
-    } else {
-      context.registerReceiver(receiver, filter)
-    }
+    PlatformCompat.registerNotExportedReceiver(context, receiver, filter)
     receiverRegistered = true
   }
 

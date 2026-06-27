@@ -1,5 +1,5 @@
 buildscript {
-  ext.kotlin_version = '1.9.0'
+  ext.kotlin_version = '1.9.24'
 }
 
 apply plugin: 'com.android.library'
@@ -11,11 +11,20 @@ def safeExtGet(prop, fallback) {
 
 android {
   namespace "com.fitnessgeolocation"
-  compileSdkVersion safeExtGet('compileSdkVersion', 34)
+  // API 35 default — override via rootProject.ext in host app (API 36 ready)
+  compileSdkVersion safeExtGet('compileSdkVersion', 35)
 
   defaultConfig {
-    minSdkVersion safeExtGet('minSdkVersion', 24)
-    targetSdkVersion safeExtGet('targetSdkVersion', 34)
+    // Android 9 (API 28) minimum — aligns with scoped storage / modern FGS policy baselines
+    minSdkVersion safeExtGet('minSdkVersion', 28)
+    targetSdkVersion safeExtGet('targetSdkVersion', 35)
+    // Provide BuildConfig.IS_NEW_ARCHITECTURE_ENABLED for conditional TurboModule wiring.
+    def newArchEnabled = project.hasProperty("newArchEnabled") ? project.getProperty("newArchEnabled") : "false"
+    buildConfigField "boolean", "IS_NEW_ARCHITECTURE_ENABLED", newArchEnabled.toString()
+  }
+
+  buildFeatures {
+    buildConfig true
   }
 
   compileOptions {
@@ -31,8 +40,7 @@ android {
 dependencies {
   implementation "com.facebook.react:react-native:+"
   implementation "org.jetbrains.kotlin:kotlin-stdlib:$kotlin_version"
-  implementation "androidx.core:core-ktx:1.13.1"
+  implementation "androidx.core:core-ktx:1.15.0"
   implementation "com.google.android.gms:play-services-location:21.3.0"
-  // WorkManager: required by TrackingRestartWorker (watchdog / crash recovery)
-  implementation "androidx.work:work-runtime-ktx:2.9.1"
+  implementation "androidx.work:work-runtime-ktx:2.10.0"
 }

@@ -82,7 +82,13 @@ class FitnessHeadlessTaskService : HeadlessJsTaskService() {
   }
   override fun getTaskConfig(intent: Intent?): HeadlessJsTaskConfig? {
     val eventName = intent?.getStringExtra("event_name") ?: return null
-    val eventParams = intent?.getSerializableExtra("event_params") as? HashMap<*, *> ?: return null
+    @Suppress("DEPRECATION")
+    val eventParams: HashMap<*, *>? = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+      intent.getSerializableExtra("event_params", HashMap::class.java)
+    } else {
+      intent.getSerializableExtra("event_params") as? HashMap<*, *>
+    }
+    if (eventParams == null) return null
 
     val params = Arguments.createMap().apply {
       putString("name", eventName)

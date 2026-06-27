@@ -1,12 +1,13 @@
-import { NativeEventEmitter, NativeModules } from 'react-native';
+import { NativeEventEmitter } from 'react-native';
 import type {
   Geofence,
   GeofenceEvent,
   GeofencesChangeEvent,
   LocationSubscription,
 } from './types';
+import { getFitnessGeolocationNative } from './native/getNativeModule';
 
-const Native = NativeModules.FitnessGeolocation;
+const Native = getFitnessGeolocationNative();
 const emitter = new NativeEventEmitter(Native);
 const TAG = 'FitnessGeoGeofence';
 
@@ -54,12 +55,17 @@ export class Geofencing {
    * Add a single geofence to monitor.
    */
   async addGeofence(geofence: Geofence): Promise<boolean> {
+    const isPolygon = geofence.vertices && geofence.vertices.length >= 3;
+    if (!isPolygon && (geofence.latitude == null || geofence.longitude == null)) {
+      throw new Error('Geofence requires (latitude, longitude, radius) or vertices[>=3]');
+    }
     try {
       const result = await Native.addGeofence?.({
         identifier: geofence.identifier,
         latitude: geofence.latitude,
         longitude: geofence.longitude,
-        radius: geofence.radius,
+        radius: geofence.radius ?? 200,
+        vertices: geofence.vertices,
         notifyOnEntry: geofence.notifyOnEntry ?? true,
         notifyOnExit: geofence.notifyOnExit ?? true,
         notifyOnDwell: geofence.notifyOnDwell ?? false,

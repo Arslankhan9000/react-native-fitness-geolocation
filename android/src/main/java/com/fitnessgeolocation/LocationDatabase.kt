@@ -7,7 +7,7 @@ import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import android.util.Log
 
-class LocationDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 3) {
+class LocationDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 6) {
   companion object {
     private const val DB_NAME = "fitness_geolocation.db"
     private const val TAG = "FitnessGeoDB"
@@ -30,7 +30,8 @@ class LocationDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, nu
         session_id TEXT,
         delivered_to_js INTEGER DEFAULT 0,
         distance_from_prev REAL DEFAULT 0,
-        cumulative_distance REAL DEFAULT 0
+        cumulative_distance REAL DEFAULT 0,
+        quality_json TEXT
       )
     """.trimIndent())
     db.execSQL("CREATE INDEX IF NOT EXISTS idx_locations_pending ON locations(delivered_to_js)")
@@ -57,6 +58,56 @@ class LocationDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, nu
       )
     """.trimIndent())
     db.execSQL("CREATE INDEX IF NOT EXISTS idx_sessions_uploaded ON sessions(uploaded)")
+
+    // ─── v5: Engine event stores (offline-first) ─────────────────────────────
+    db.execSQL("""
+      CREATE TABLE IF NOT EXISTS diagnostics_timeline (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT,
+        level TEXT NOT NULL,
+        event TEXT NOT NULL,
+        data_json TEXT,
+        timestamp INTEGER NOT NULL
+      )
+    """.trimIndent())
+    db.execSQL("CREATE INDEX IF NOT EXISTS idx_diag_session_ts ON diagnostics_timeline(session_id, timestamp)")
+
+    db.execSQL("""
+      CREATE TABLE IF NOT EXISTS motion_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT,
+        activity TEXT NOT NULL,
+        confidence REAL DEFAULT 0,
+        data_json TEXT,
+        timestamp INTEGER NOT NULL
+      )
+    """.trimIndent())
+    db.execSQL("CREATE INDEX IF NOT EXISTS idx_motion_session_ts ON motion_events(session_id, timestamp)")
+
+    db.execSQL("""
+      CREATE TABLE IF NOT EXISTS geofence_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT,
+        identifier TEXT NOT NULL,
+        action TEXT NOT NULL,
+        data_json TEXT,
+        timestamp INTEGER NOT NULL
+      )
+    """.trimIndent())
+    db.execSQL("CREATE INDEX IF NOT EXISTS idx_geofence_session_ts ON geofence_events(session_id, timestamp)")
+
+    db.execSQL("""
+      CREATE TABLE IF NOT EXISTS sync_queue (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        attempts INTEGER DEFAULT 0,
+        last_error TEXT,
+        next_retry_ts INTEGER DEFAULT 0,
+        created_ts INTEGER NOT NULL
+      )
+    """.trimIndent())
+    db.execSQL("CREATE INDEX IF NOT EXISTS idx_sync_queue_retry ON sync_queue(next_retry_ts)")
   }
 
   override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -69,6 +120,70 @@ class LocationDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, nu
       try { db.execSQL("ALTER TABLE locations ADD COLUMN battery_level REAL DEFAULT -1") } catch (_: Exception) {}
       try { db.execSQL("ALTER TABLE locations ADD COLUMN motion_state TEXT DEFAULT 'unknown'") } catch (_: Exception) {}
       try { db.execSQL("ALTER TABLE locations ADD COLUMN signal_strength TEXT DEFAULT 'medium'") } catch (_: Exception) {}
+    }
+    if (oldVersion < 4) {
+      db.execSQL("""
+        CREATE TABLE IF NOT EXISTS native_logs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          level TEXT NOT NULL,
+          message TEXT NOT NULL,
+          timestamp INTEGER NOT NULL
+        )
+      """.trimIndent())
+      db.execSQL("CREATE INDEX IF NOT EXISTS idx_native_logs_ts ON native_logs(timestamp)")
+    }
+    if (oldVersion < 5) {
+      db.execSQL("""
+        CREATE TABLE IF NOT EXISTS diagnostics_timeline (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT,
+          level TEXT NOT NULL,
+          event TEXT NOT NULL,
+          data_json TEXT,
+          timestamp INTEGER NOT NULL
+        )
+      """.trimIndent())
+      db.execSQL("CREATE INDEX IF NOT EXISTS idx_diag_session_ts ON diagnostics_timeline(session_id, timestamp)")
+
+      db.execSQL("""
+        CREATE TABLE IF NOT EXISTS motion_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT,
+          activity TEXT NOT NULL,
+          confidence REAL DEFAULT 0,
+          data_json TEXT,
+          timestamp INTEGER NOT NULL
+        )
+      """.trimIndent())
+      db.execSQL("CREATE INDEX IF NOT EXISTS idx_motion_session_ts ON motion_events(session_id, timestamp)")
+
+      db.execSQL("""
+        CREATE TABLE IF NOT EXISTS geofence_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT,
+          identifier TEXT NOT NULL,
+          action TEXT NOT NULL,
+          data_json TEXT,
+          timestamp INTEGER NOT NULL
+        )
+      """.trimIndent())
+      db.execSQL("CREATE INDEX IF NOT EXISTS idx_geofence_session_ts ON geofence_events(session_id, timestamp)")
+
+      db.execSQL("""
+        CREATE TABLE IF NOT EXISTS sync_queue (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          kind TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          attempts INTEGER DEFAULT 0,
+          last_error TEXT,
+          next_retry_ts INTEGER DEFAULT 0,
+          created_ts INTEGER NOT NULL
+        )
+      """.trimIndent())
+      db.execSQL("CREATE INDEX IF NOT EXISTS idx_sync_queue_retry ON sync_queue(next_retry_ts)")
+    }
+    if (oldVersion < 6) {
+      try { db.execSQL("ALTER TABLE locations ADD COLUMN quality_json TEXT") } catch (_: Exception) {}
     }
   }
 
@@ -91,6 +206,7 @@ class LocationDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, nu
       put("delivered_to_js", if (location.deliveredToJs) 1 else 0)
       put("distance_from_prev", location.distanceFromPrev)
       put("cumulative_distance", location.cumulativeDistance)
+      put("quality_json", location.qualityJson)
     }
     return writableDatabase.insertWithOnConflict("locations", null, cv, SQLiteDatabase.CONFLICT_REPLACE) != -1L
   }
@@ -150,6 +266,57 @@ class LocationDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, nu
   fun clearAll() {
     writableDatabase.delete("locations", null, null)
     writableDatabase.delete("sessions", null, null)
+  }
+
+  fun getAllLocations(limit: Int = 1000): List<StoredLocation> {
+    val results = mutableListOf<StoredLocation>()
+    val cursor = readableDatabase.query(
+      "locations", null, null, null, null, null,
+      "timestamp DESC", limit.toString(),
+    )
+    cursor.use { while (it.moveToNext()) results.add(rowToLocation(it)) }
+    return results
+  }
+
+  fun destroyLocation(id: String): Boolean {
+    return writableDatabase.delete("locations", "id = ?", arrayOf(id)) > 0
+  }
+
+  fun logNative(level: String, message: String) {
+    val cv = ContentValues().apply {
+      put("level", level)
+      put("message", message)
+      put("timestamp", System.currentTimeMillis())
+    }
+    writableDatabase.insert("native_logs", null, cv)
+  }
+
+  fun getNativeLog(start: Long?, end: Long?, order: Int, limit: Int): String {
+    val clauses = mutableListOf<String>()
+    val args = mutableListOf<String>()
+    start?.let { clauses.add("timestamp >= ?"); args.add(it.toString()) }
+    end?.let { clauses.add("timestamp <= ?"); args.add(it.toString()) }
+    val where = if (clauses.isEmpty()) "" else "WHERE ${clauses.joinToString(" AND ")}"
+    val orderDir = if (order >= 0) "ASC" else "DESC"
+    val cursor = readableDatabase.rawQuery(
+      "SELECT level, message, timestamp FROM native_logs $where ORDER BY timestamp $orderDir LIMIT $limit",
+      args.toTypedArray(),
+    )
+    val lines = mutableListOf<String>()
+    cursor.use {
+      while (it.moveToNext()) {
+        lines.add("[${it.getLong(2)}] [${it.getString(0)}] ${it.getString(1)}")
+      }
+    }
+    return lines.joinToString("\n")
+  }
+
+  fun destroyNativeLog() {
+    writableDatabase.delete("native_logs", null, null)
+  }
+
+  fun purgeNativeLogsBefore(cutoffMs: Long) {
+    writableDatabase.delete("native_logs", "timestamp < ?", arrayOf(cutoffMs.toString()))
   }
 
   fun deleteLocationsForSession(sessionId: String) {
@@ -255,6 +422,7 @@ class LocationDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, nu
       deliveredToJs = c.getInt(c.getColumnIndexOrThrow("delivered_to_js")) == 1,
       distanceFromPrev = tryOrNull { c.getDouble(c.getColumnIndexOrThrow("distance_from_prev")) } ?: 0.0,
       cumulativeDistance = tryOrNull { c.getDouble(c.getColumnIndexOrThrow("cumulative_distance")) } ?: 0.0,
+      qualityJson = tryOrNull { c.getString(c.getColumnIndexOrThrow("quality_json")) },
     )
   }
 

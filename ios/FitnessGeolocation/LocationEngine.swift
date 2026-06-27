@@ -53,8 +53,21 @@ final class LocationEngine: NSObject {
   private let motion = MotionEngine.shared
   private var filter = LocationFilter()
   /// C++ tracking engine — replaces LocationFilter + cumulativeDistance on the hot path.
-  private let trackEngine = TrackEngineBridge.shared
+  private let trackEngine = TrackEngineBridge.shared()
+  private let adaptiveGPS = AdaptiveGPSManager()
+  private let autoPauseEngine = IntelligentAutoPauseEngine()
+  private let scheduleManager = ScheduleManager.shared
+  private let nativeLogger = NativeLogger.shared
   private let oslog = OSLog(subsystem: "com.fitnessgeolocation", category: "location")
+
+  // Background runtime state
+  var isEngineEnabled = false
+  var geofencesOnlyMode = false
+  var isMoving = true
+  var httpAutoSyncThreshold = 0
+  private var httpPendingSinceSync = 0
+  private var heartbeatTimer: Timer?
+  private var scheduleRecords: [String] = []
   
   // Live Activity Manager (iOS 16.1+)
   private var liveActivityManager: LiveActivityManager? {
@@ -115,6 +128,7 @@ final class LocationEngine: NSObject {
   private var isGeofenceActive = false
 
   private let watchStateKey = "com.fitnessgeolocation.watchActive"
+  private let sessionActiveKey = "com.fitnessgeolocation.sessionActive"
 
   private override init() {
     super.init()
@@ -123,7 +137,8 @@ final class LocationEngine: NSObject {
     locationManager.activityType = .fitness
     locationManager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
     locationManager.distanceFilter = kCLDistanceFilterNone
-    locationManager.showsBackgroundLocationIndicator = true
+    // Off until an active watch starts — avoids status-bar indicator on cold launch.
+    locationManager.showsBackgroundLocationIndicator = false
 
     NotificationCenter.default.addObserver(
       self, selector: #selector(appDidBecomeActive),
@@ -133,7 +148,37 @@ final class LocationEngine: NSObject {
       self, selector: #selector(appWillTerminate),
       name: UIApplication.willTerminateNotification, object: nil
     )
-    restoreWatchIfNeeded()
+    reconcileWatchStateOnColdLaunch()
+    wireBackgroundEngines()
+    ProviderMonitor.shared.onEvent = { [weak self] event in
+      guard let self = self else { return }
+      self.delegate?.locationEngine(self, didLog: event)
+    }
+    ProviderMonitor.shared.start()
+  }
+
+  private func wireBackgroundEngines() {
+    autoPauseEngine.onPauseDetected = { [weak self] in
+      self?.onStationaryAutoPause()
+    }
+    autoPauseEngine.onResumeDetected = { [weak self] in
+      self?.onMotionResume()
+    }
+    scheduleManager.onScheduleChange = { [weak self] enabled, mode in
+      guard let self = self else { return }
+      self.geofencesOnlyMode = (mode == .geofence)
+      if enabled {
+        if mode == .geofence { self.stopObserving() }
+        else { _ = self.watchPosition(options: [:]) }
+      } else {
+        self.stopObserving()
+      }
+      self.delegate?.locationEngine(self, didLog: [
+        "event": "schedule",
+        "enabled": enabled,
+        "mode": mode.rawValue,
+      ])
+    }
   }
 
   deinit { NotificationCenter.default.removeObserver(self) }
@@ -177,10 +222,37 @@ final class LocationEngine: NSObject {
     log(paused ? "pause" : "resume", ["mode": mode.rawValue])
     if paused {
       setMode(.stationary)
+      pauseGpsHardware()
     } else {
       setMode(.fitness)
+      resumeGpsHardwareIfWatching()
     }
   }
+
+  /// Stop CLLocationManager while keeping watch registrations (manual or auto pause).
+  private func pauseGpsHardware() {
+    cancelStopTimeout()
+    locationManager.stopUpdatingLocation()
+    backgroundSession.stop()
+    locationManager.showsBackgroundLocationIndicator = false
+    log("gps-pause", ["watchCount": watchIds.count])
+  }
+
+  /// Restart CLLocationManager after pause if watches are still registered.
+  private func resumeGpsHardwareIfWatching() {
+    guard !watchIds.isEmpty || timeBasedWatchId != nil else { return }
+    gpsSuspended = false
+    removeStationaryGeofence()
+    configureBackgroundUpdatesIfAllowed()
+    applyModeSettings()
+    backgroundSession.start()
+    locationManager.showsBackgroundLocationIndicator = lastShowsBackgroundIndicator ?? true
+    locationManager.startUpdatingLocation()
+    isWatching = true
+    log("gps-resume", ["watchCount": watchIds.count])
+  }
+
+  private var lastShowsBackgroundIndicator: Bool?
 
   // MARK: - Battery-Conscious GPS Management
 
@@ -207,7 +279,7 @@ final class LocationEngine: NSObject {
 
   /// Called when MotionEngine detects movement (walking/running/cycling)
   func onMotionResume() {
-    guard motionAutoResumeEnabled else { return }
+    guard motionAutoResumeEnabled, !isPaused else { return }
     cancelStopTimeout()
     stationarySince = nil
     wasMovingFlagged = true
@@ -360,6 +432,7 @@ final class LocationEngine: NSObject {
         return
       }
     }
+    applyWatchOptions(options)
     locationManager.requestLocation()
     pendingSingleFixCompletion = completion
   }
@@ -687,6 +760,7 @@ final class LocationEngine: NSObject {
     let id = database.createSession(name: name, activityType: activityType, extras: extras)
     currentSessionId = id
     currentActivityType = activityType
+    currentActivityType = activityType
     sessionStartTime = Date()
     cumulativeDistance = 0
     lastProcessedLocation = nil
@@ -794,11 +868,14 @@ final class LocationEngine: NSObject {
 
   private func startWatchEngine() {
     isWatching = true
+    isEngineEnabled = true
+    adaptiveGPS.startTrackingSession()
     trackEngine.startSession(Date().timeIntervalSince1970, liveActivityInterval: 3.0)
     configureBackgroundUpdatesIfAllowed()
     applyModeSettings()
     backgroundSession.start()
     persistWatchState()
+    locationManager.showsBackgroundLocationIndicator = lastShowsBackgroundIndicator ?? true
     locationManager.startUpdatingLocation()
     os_log(.debug, log: oslog, "watch_start mode=%@ df=%.1f acc=%.1f always=%d",
            mode.rawValue, locationManager.distanceFilter, locationManager.desiredAccuracy, hasAlwaysAuthorization())
@@ -812,6 +889,8 @@ final class LocationEngine: NSObject {
 
   private func stopWatchEngine() {
     isWatching = false
+    isEngineEnabled = false
+    adaptiveGPS.stopTrackingSession()
     gpsSuspended = false
     cancelStopTimeout()
     timeBasedTimer?.invalidate()
@@ -834,21 +913,48 @@ final class LocationEngine: NSObject {
 
   private func restoreWatchIfNeeded() {
     guard UserDefaults.standard.bool(forKey: watchStateKey) else { return }
+    guard UserDefaults.standard.bool(forKey: sessionActiveKey) else {
+      clearWatchState()
+      return
+    }
     configureBackgroundUpdatesIfAllowed()
     applyModeSettings()
     backgroundSession.start()
+    locationManager.showsBackgroundLocationIndicator = lastShowsBackgroundIndicator ?? true
     locationManager.startUpdatingLocation()
     isWatching = true
     log("watch-restore", ["mode": mode.rawValue])
   }
 
+  /// Cold launch: only restore GPS for a legitimate in-flight workout; otherwise hard-idle.
+  private func reconcileWatchStateOnColdLaunch() {
+    let hadWatch = UserDefaults.standard.bool(forKey: watchStateKey)
+    let sessionActive = UserDefaults.standard.bool(forKey: sessionActiveKey)
+    if hadWatch && sessionActive {
+      restoreWatchIfNeeded()
+      return
+    }
+    stopWatchEngine()
+    dismissLiveActivitiesIfIdle()
+  }
+
+  private func dismissLiveActivitiesIfIdle() {
+    if #available(iOS 16.1, *) {
+      Task { @MainActor in
+        await LiveActivityManager.shared.dismissAllActivities(immediate: true)
+      }
+    }
+  }
+
   private func persistWatchState() {
     UserDefaults.standard.set(true, forKey: watchStateKey)
+    UserDefaults.standard.set(true, forKey: sessionActiveKey)
     UserDefaults.standard.set(mode.rawValue, forKey: "com.fitnessgeolocation.mode")
   }
 
   private func clearWatchState() {
     UserDefaults.standard.set(false, forKey: watchStateKey)
+    UserDefaults.standard.set(false, forKey: sessionActiveKey)
   }
 
   // MARK: - Options
@@ -874,6 +980,7 @@ final class LocationEngine: NSObject {
     }
     if let indicator = options["showsBackgroundLocationIndicator"] as? Bool {
       locationManager.showsBackgroundLocationIndicator = indicator
+      lastShowsBackgroundIndicator = indicator
     }
     if let activity = options["activityType"] as? String {
       switch activity {
@@ -912,6 +1019,12 @@ final class LocationEngine: NSObject {
 
   private func makeStored(from location: CLLocation, delivered: Bool) -> StoredLocation {
     let dist = computeDistance(from: location)
+    let positionConfidence = min(1.0, max(0, 1.0 - location.horizontalAccuracy / 100.0))
+    let motionConfidence = min(1.0, max(0, motion.currentConfidence()))
+    let qualityJson = String(
+      format: "{\"positionConfidence\":%.4f,\"motionConfidence\":%.4f,\"headingConfidence\":%.4f,\"activityConfidence\":%.4f}",
+      positionConfidence, motionConfidence, 0.5, motionConfidence
+    )
     return StoredLocation(
       id: UUID().uuidString,
       latitude: location.coordinate.latitude,
@@ -925,7 +1038,8 @@ final class LocationEngine: NSObject {
       signalStrength: signalStrength(from: location),
       provider: "gps",
       motionState: motionState,
-      confidence: min(1.0, max(0, 1.0 - location.horizontalAccuracy / 100.0)),
+      confidence: positionConfidence,
+      qualityJson: qualityJson,
       sessionId: currentSessionId ?? UUID().uuidString,
       deliveredToJs: delivered,
       distanceFromPrev: dist,
@@ -957,6 +1071,17 @@ final class LocationEngine: NSObject {
       return
     }
 
+    if !hasCustomDesiredAccuracy && !hasCustomDistanceFilter {
+      let settings = adaptiveGPS.calculateOptimalSettings(
+        speed: raw.speed,
+        accuracy: raw.horizontalAccuracy,
+        batteryLevel: Float(batteryLevel()),
+        isMoving: isMoving
+      )
+      locationManager.desiredAccuracy = settings.0
+      locationManager.distanceFilter = settings.1
+    }
+
     // ── C++ fast path ────────────────────────────────────────────────────────
     // TrackEngineBridge runs: LocationFilterC → KalmanState → haversine_m
     // All zero-allocation, ~2 µs on A15. Falls back to Swift filter for the
@@ -975,23 +1100,23 @@ final class LocationEngine: NSObject {
     // ── Live Activity update (native, no JS bridge crossing) ─────────────────
     if engResult.shouldUpdateLiveActivity, engResult.accepted {
       if #available(iOS 16.1, *) {
-        let sessionStart = Date(timeIntervalSince1970:
-          raw.timestamp.timeIntervalSince1970 - engResult.elapsedS)
-        _ = sessionStart  // reserved for future staleDate calculation
-        Task { @MainActor in
-          await LiveActivityManager.shared.updateActivity(
-            distance: engResult.totalDistanceM,
-            duration: engResult.elapsedS,
-            pace: engResult.paceStr,
-            speed: engResult.speedKmh,
-            calories: LiveActivityManager.estimateCalories(
+        let manager = LiveActivityManager.shared
+        if manager.isActive {
+          Task { @MainActor in
+            await manager.updateActivity(
               distance: engResult.totalDistanceM,
-              activityType: currentActivityType
-            ),
-            heartRate: nil,
-            gpsStatus: LiveActivityManager.gpsStatusFromAccuracy(raw.horizontalAccuracy),
-            isPaused: isPaused
-          )
+              duration: engResult.elapsedS,
+              pace: engResult.paceStr,
+              speed: engResult.speedKmh,
+              calories: LiveActivityManager.estimateCalories(
+                distance: engResult.totalDistanceM,
+                activityType: currentActivityType
+              ),
+              heartRate: nil,
+              gpsStatus: LiveActivityManager.gpsStatusFromAccuracy(raw.horizontalAccuracy),
+              isPaused: isPaused
+            )
+          }
         }
       }
     }
@@ -1026,6 +1151,9 @@ final class LocationEngine: NSObject {
       return
     }
 
+    // Geofence scaling: keep nearest 20 circular regions active.
+    refreshActiveCircularGeofences()
+
     // If time-based tracking is active, batch this location
     if timeBasedWatchId != nil {
       timeBasedBatchedLocations.append(stored)
@@ -1054,6 +1182,13 @@ final class LocationEngine: NSObject {
     if isAppActive && !watchIds.isEmpty {
       delegate?.locationEngine(self, didPersist: stored, watchIds: Array(watchIds.keys), deliverLive: true)
     }
+
+    // Background: location event + auto-sync + schedule + intelligent auto-pause
+    delegate?.locationEngine(self, didLog: ["event": "location", "location": stored.toDictionary()])
+    scheduleManager.evaluate()
+    evaluatePolygonGeofences(lat: smoothed.coordinate.latitude, lng: smoothed.coordinate.longitude)
+    _ = autoPauseEngine.update(location: smoothed)
+    triggerAutoSyncIfNeeded()
   }
 
   // MARK: - Logging
@@ -1210,8 +1345,179 @@ final class LocationEngine: NSObject {
   func httpSyncAsync(completion: (([[String: Any]]) -> Void)? = nil) {
     httpQueue.async { [weak self] in
       guard let self = self else { return }
-      let results = self.httpSync()
+      let results = self.httpSyncAll()
       completion?(results)
+    }
+  }
+
+  /// Loop batches until queue empty (maxBatchSize parity).
+  func httpSyncAll() -> [[String: Any]] {
+    var all: [[String: Any]] = []
+    for _ in 0..<20 {
+      let batch = httpSync()
+      if batch.isEmpty { break }
+      all.append(contentsOf: batch)
+    }
+    return all
+  }
+
+  private func triggerAutoSyncIfNeeded() {
+    guard httpConfigured, httpAutoSync, httpUrl != nil else { return }
+    httpPendingSinceSync += 1
+    if httpAutoSyncThreshold > 0 && httpPendingSinceSync < httpAutoSyncThreshold { return }
+    httpPendingSinceSync = 0
+    httpSyncAsync()
+  }
+
+  // MARK: - Background Lifecycle
+
+  func ready(_ config: [String: Any]) -> [String: Any] {
+    mergeConfig(config)
+    return getState()
+  }
+
+  func mergeConfig(_ config: [String: Any]) {
+    if let mode = config["trackingMode"] as? String { setModeString(mode) }
+    if let url = config["url"] as? String {
+      httpConfigure(
+        url: url,
+        method: config["method"] as? String ?? "POST",
+        headers: config["headers"] as? [String: String] ?? [:],
+        autoSync: config["autoSync"] as? Bool ?? true,
+        batchSync: config["batchSync"] as? Bool ?? true,
+        batchSize: config["batchSize"] as? Int ?? config["maxBatchSize"] as? Int ?? 100,
+        retryCount: config["retryCount"] as? Int ?? 3
+      )
+      httpAutoSyncThreshold = config["autoSyncThreshold"] as? Int ?? 0
+    }
+    if let schedule = config["schedule"] as? [String] {
+      scheduleRecords = schedule
+      scheduleManager.configure(records: schedule)
+    }
+    if let heartbeat = config["heartbeatInterval"] as? Int, heartbeat > 0 {
+      startHeartbeat(intervalSec: heartbeat)
+    }
+    applyLoggerFromConfig(config)
+  }
+
+  private func applyLoggerFromConfig(_ config: [String: Any]) {
+    let source = (config["logger"] as? [String: Any]) ?? config
+    let level = (source["logLevel"] as? NSNumber)?.intValue
+      ?? (source["logLevel"] as? Int)
+    let maxDays = (source["logMaxDays"] as? NSNumber)?.intValue
+      ?? (source["logMaxDays"] as? Int)
+    if level != nil || maxDays != nil {
+      configureLogger(
+        logLevel: level ?? 0,
+        logMaxDays: maxDays ?? 3
+      )
+    }
+    if let debug = (source["debug"] as? Bool) ?? (config["debug"] as? Bool), debug {
+      nativeLogger.log(level: "INFO", message: "SDK ready (debug)")
+    }
+  }
+
+  func configureLogger(logLevel: Int, logMaxDays: Int) {
+    nativeLogger.setMinLevel(logLevel)
+    nativeLogger.setMaxDays(logMaxDays)
+  }
+
+  func getState() -> [String: Any] {
+    var state: [String: Any] = [
+      "enabled": isEngineEnabled,
+      "isMoving": isMoving,
+      "tracking": isWatching,
+      "mode": mode.rawValue,
+      "pending": database.pendingCount(),
+      "odometer": cumulativeDistance,
+    ]
+    state.merge(scheduleManager.stateDict()) { _, new in new }
+    return state
+  }
+
+  func startEngine() {
+    if watchIds.isEmpty { _ = watchPosition(options: [:]) }
+    isEngineEnabled = true
+    delegate?.locationEngine(self, didLog: ["event": "enabledchange", "enabled": true])
+  }
+
+  func stopEngine() {
+    stopObserving()
+    delegate?.locationEngine(self, didLog: ["event": "enabledchange", "enabled": false])
+  }
+
+  func changePace(_ moving: Bool) {
+    isMoving = moving
+    if moving { onMotionResume() } else { onStationaryAutoPause() }
+    delegate?.locationEngine(self, didLog: [
+      "event": "motionchange",
+      "isMoving": moving,
+      "location": lastLocation.map { makeStored(from: $0, delivered: false).toDictionary() } as Any,
+    ])
+  }
+
+  func startSchedule() {
+    scheduleManager.configure(records: scheduleRecords)
+    scheduleManager.start()
+  }
+
+  func stopSchedule() { scheduleManager.stop() }
+
+  func startGeofencesMode() {
+    geofencesOnlyMode = true
+    stopObserving()
+    nativeLogger.log(level: "INFO", message: "geofences-only mode started")
+  }
+
+  func getLocations(limit: Int = 1000) -> [[String: Any]] {
+    database.getAllLocations(limit: Int32(limit)).map { $0.toDictionary() }
+  }
+
+  func destroyLocation(_ uuid: String) -> Bool {
+    database.destroyLocation(uuid)
+  }
+
+  func insertLocation(_ params: [String: Any]) -> String? {
+    guard let lat = params["latitude"] as? Double,
+          let lng = params["longitude"] as? Double else { return nil }
+    let loc = CLLocation(
+      coordinate: CLLocationCoordinate2D(latitude: lat, longitude: lng),
+      altitude: params["altitude"] as? Double ?? 0,
+      horizontalAccuracy: params["accuracy"] as? Double ?? 10,
+      verticalAccuracy: 0,
+      course: params["heading"] as? Double ?? -1,
+      speed: params["speed"] as? Double ?? 0,
+      timestamp: Date(timeIntervalSince1970: (params["timestamp"] as? Double ?? Double(Date().timeIntervalSince1970 * 1000)) / 1000)
+    )
+    let stored = makeStored(from: loc, delivered: false)
+    guard database.insert(stored) else { return nil }
+    triggerAutoSyncIfNeeded()
+    return stored.id
+  }
+
+  func getNativeLog(query: [String: Any]) -> String {
+    let start = query["start"] as? Int64
+    let end = query["end"] as? Int64
+    let order = query["order"] as? Int ?? 1
+    let limit = query["limit"] as? Int ?? 1000
+    return nativeLogger.getLog(start: start, end: end, order: order, limit: limit)
+  }
+
+  func destroyNativeLog() { nativeLogger.destroyLog() }
+
+  func nativeLog(level: String, message: String) {
+    nativeLogger.log(level: level, message: message)
+  }
+
+  private func startHeartbeat(intervalSec: Int) {
+    heartbeatTimer?.invalidate()
+    heartbeatTimer = Timer.scheduledTimer(withTimeInterval: TimeInterval(intervalSec), repeats: true) { [weak self] _ in
+      guard let self = self else { return }
+      self.delegate?.locationEngine(self, didLog: [
+        "event": "heartbeat",
+        "pending": self.database.pendingCount(),
+        "enabled": self.isEngineEnabled,
+      ])
     }
   }
 
@@ -1247,26 +1553,34 @@ final class LocationEngine: NSObject {
 
   // MARK: - Geofencing
 
+  private struct PolygonFence {
+    let id: String
+    let data: [String: Any]
+    let vertices: [GeoMath.Point]
+    let bbox: (minLat: Double, maxLat: Double, minLng: Double, maxLng: Double)
+    var inside: Bool = false
+    var dwellStartMs: Int64 = 0
+  }
+
   var geofenceStore: [String: [String: Any]] = [:]
+  private var polygonFences: [String: PolygonFence] = [:]
+  private var activeCircularIds = Set<String>()
+  private let maxActiveCircularGeofences = 20
 
   func addGeofence(_ data: [String: Any]) -> Bool {
     guard let id = data["identifier"] as? String else { return false }
-    geofenceStore[id] = data
 
-    // Start CLCircularRegion monitoring on iOS
-    if let lat = data["latitude"] as? Double,
-       let lng = data["longitude"] as? Double,
-       let radius = data["radius"] as? Double {
-      let region = CLCircularRegion(
-        center: CLLocationCoordinate2D(latitude: lat, longitude: lng),
-        radius: max(radius, 100), // iOS minimum is 100m
-        identifier: "geofence_\(id)"
-      )
-      region.notifyOnEntry = data["notifyOnEntry"] as? Bool ?? true
-      region.notifyOnExit = data["notifyOnExit"] as? Bool ?? true
-      locationManager.startMonitoring(for: region)
+    if let vertsRaw = data["vertices"] as? [[String: Any]], vertsRaw.count >= 3 {
+      geofenceStore.removeValue(forKey: id)
+      let verts = GeoMath.parseVertices(vertsRaw)
+      guard let box = GeoMath.boundingBox(verts) else { return false }
+      polygonFences[id] = PolygonFence(id: id, data: data, vertices: verts, bbox: box)
+    } else {
+      polygonFences.removeValue(forKey: id)
+      geofenceStore[id] = data
+      refreshActiveCircularGeofences()
     }
-    os_log(.debug, log: oslog, "geofence_added: %@", id)
+    delegate?.locationEngine(self, didLog: ["event": "geofencesChange", "on": [id], "off": [] as [String]])
     return true
   }
 
@@ -1277,30 +1591,125 @@ final class LocationEngine: NSObject {
 
   func removeGeofence(_ identifier: String) -> Bool {
     geofenceStore.removeValue(forKey: identifier)
-    locationManager.stopMonitoring(for: CLCircularRegion(
-      center: CLLocationCoordinate2D(latitude: 0, longitude: 0),
-      radius: 100, identifier: "geofence_\(identifier)"
-    ))
-    os_log(.debug, log: oslog, "geofence_removed: %@", identifier)
+    polygonFences.removeValue(forKey: identifier)
+    for region in locationManager.monitoredRegions where region.identifier == "geofence_\(identifier)" {
+      locationManager.stopMonitoring(for: region)
+    }
+    activeCircularIds.remove(identifier)
+    refreshActiveCircularGeofences()
+    delegate?.locationEngine(self, didLog: ["event": "geofencesChange", "on": [] as [String], "off": [identifier]])
     return true
   }
 
   func removeGeofences(_ identifiers: [String]?) -> Bool {
-    if let ids = identifiers {
-      ids.forEach { _ = removeGeofence($0) }
-    } else {
-      geofenceStore.keys.forEach { _ = removeGeofence($0) }
-      geofenceStore.removeAll()
+    if let ids = identifiers { ids.forEach { _ = removeGeofence($0) } }
+    else {
+      let all = Array(geofenceStore.keys) + Array(polygonFences.keys)
+      geofenceStore.removeAll(); polygonFences.removeAll()
+      activeCircularIds.removeAll()
+      for region in locationManager.monitoredRegions where region.identifier.hasPrefix("geofence_") {
+        locationManager.stopMonitoring(for: region)
+      }
+      delegate?.locationEngine(self, didLog: ["event": "geofencesChange", "on": [] as [String], "off": all])
     }
     return true
   }
 
+  /// Maintain an active-set of up to 20 monitored circular regions (iOS limit).
+  /// All remaining logical geofences remain in `geofenceStore` and are activated as the
+  /// device moves, based on nearest distance to the last known location.
+  private func refreshActiveCircularGeofences() {
+    guard let center = lastLocation?.coordinate else {
+      // No location yet — keep the first N insertion-order geofences active
+      let ids = Array(geofenceStore.keys.prefix(maxActiveCircularGeofences))
+      applyActiveCircularIds(Set(ids))
+      return
+    }
+
+    let scored: [(String, Double)] = geofenceStore.compactMap { (id, data) in
+      guard let lat = data["latitude"] as? Double, let lng = data["longitude"] as? Double else { return nil }
+      let d = CLLocation(latitude: lat, longitude: lng).distance(from: CLLocation(latitude: center.latitude, longitude: center.longitude))
+      return (id, d)
+    }
+    let nearest = scored.sorted(by: { $0.1 < $1.1 }).prefix(maxActiveCircularGeofences).map { $0.0 }
+    applyActiveCircularIds(Set(nearest))
+  }
+
+  private func applyActiveCircularIds(_ desired: Set<String>) {
+    // Stop monitoring regions that are no longer active
+    let toStop = activeCircularIds.subtracting(desired)
+    for id in toStop {
+      for region in locationManager.monitoredRegions where region.identifier == "geofence_\(id)" {
+        locationManager.stopMonitoring(for: region)
+      }
+    }
+
+    // Start monitoring for newly active regions
+    let toStart = desired.subtracting(activeCircularIds)
+    for id in toStart {
+      guard let data = geofenceStore[id],
+            let lat = data["latitude"] as? Double,
+            let lng = data["longitude"] as? Double else { continue }
+      let radius = (data["radius"] as? Double) ?? 200
+      let region = CLCircularRegion(
+        center: CLLocationCoordinate2D(latitude: lat, longitude: lng),
+        radius: max(radius, 100),
+        identifier: "geofence_\(id)"
+      )
+      region.notifyOnEntry = data["notifyOnEntry"] as? Bool ?? true
+      region.notifyOnExit = data["notifyOnExit"] as? Bool ?? true
+      locationManager.startMonitoring(for: region)
+    }
+
+    activeCircularIds = desired
+  }
+
   func getGeofences() -> [[String: Any]] {
-    Array(geofenceStore.values)
+    Array(geofenceStore.values) + polygonFences.values.map { $0.data }
   }
 
   func geofenceExists(_ identifier: String) -> Bool {
-    geofenceStore[identifier] != nil
+    geofenceStore[identifier] != nil || polygonFences[identifier] != nil
+  }
+
+  private func evaluatePolygonGeofences(lat: Double, lng: Double) {
+    let now = Int64(Date().timeIntervalSince1970 * 1000)
+    for (key, var fence) in polygonFences {
+      if !GeoMath.inBoundingBox(lat: lat, lng: lng, box: fence.bbox) {
+        if fence.inside {
+          fence.inside = false
+          polygonFences[key] = fence
+          if fence.data["notifyOnExit"] as? Bool != false { emitGeofence(id: fence.id, action: "EXIT", data: fence.data) }
+        }
+        continue
+      }
+      let inside = GeoMath.pointInPolygon(lat: lat, lng: lng, vertices: fence.vertices)
+      if inside && !fence.inside {
+        fence.inside = true; fence.dwellStartMs = now; polygonFences[key] = fence
+        if fence.data["notifyOnEntry"] as? Bool != false { emitGeofence(id: fence.id, action: "ENTER", data: fence.data) }
+      } else if !inside && fence.inside {
+        fence.inside = false; polygonFences[key] = fence
+        if fence.data["notifyOnExit"] as? Bool != false { emitGeofence(id: fence.id, action: "EXIT", data: fence.data) }
+      } else if inside && fence.inside && fence.data["notifyOnDwell"] as? Bool == true {
+        let delay = Int64(fence.data["loiteringDelayMs"] as? Double ?? 30_000)
+        if now - fence.dwellStartMs >= delay {
+          emitGeofence(id: fence.id, action: "DWELL", data: fence.data)
+          fence.dwellStartMs = now + delay; polygonFences[key] = fence
+        }
+      }
+    }
+  }
+
+  private func emitGeofence(id: String, action: String, data: [String: Any]) {
+    delegate?.locationEngine(self, didLog: [
+      "event": "geofence",
+      "identifier": id,
+      "action": action,
+      "latitude": data["latitude"] ?? 0,
+      "longitude": data["longitude"] ?? 0,
+      "radius": data["radius"] ?? 0,
+      "timestamp": Date().timeIntervalSince1970 * 1000,
+    ])
   }
 
   // MARK: - Provider State & Power Save
@@ -1324,6 +1733,35 @@ final class LocationEngine: NSObject {
       }
     }
     return "full"
+  }
+
+  func requestTemporaryFullAccuracy(purpose: String, completion: @escaping (Bool) -> Void) {
+    if #available(iOS 14.0, *) {
+      locationManager.requestTemporaryFullAccuracyAuthorization(withPurposeKey: purpose) { error in
+        completion(error == nil)
+      }
+    } else {
+      completion(true)
+    }
+  }
+
+  func uploadLog(url: String, query: [String: Any], completion: @escaping (Bool, String) -> Void) {
+    let body = nativeLogger.getLog(
+      start: query["start"] as? Int64,
+      end: query["end"] as? Int64,
+      order: query["order"] as? Int ?? 1,
+      limit: query["limit"] as? Int ?? 10_000
+    )
+    httpQueue.async {
+      var request = URLRequest(url: URL(string: url)!)
+      request.httpMethod = "POST"
+      request.setValue("text/plain", forHTTPHeaderField: "Content-Type")
+      request.httpBody = body.data(using: .utf8)
+      URLSession.shared.dataTask(with: request) { _, response, error in
+        let ok = error == nil && (response as? HTTPURLResponse).map { (200...299).contains($0.statusCode) } == true
+        completion(ok, ok ? "uploaded" : (error?.localizedDescription ?? "failed"))
+      }.resume()
+    }
   }
 
   func isPowerSaveMode() -> Bool {
@@ -1429,6 +1867,10 @@ extension LocationEngine: CLLocationManagerDelegate {
       let stored = makeStored(from: location, delivered: true)
       _ = database.insert(stored)
       completion(.success(stored))
+      if watchIds.isEmpty && !isWatching && timeBasedWatchId == nil {
+        locationManager.stopUpdatingLocation()
+        locationManager.showsBackgroundLocationIndicator = false
+      }
       return
     }
 
@@ -1495,9 +1937,12 @@ extension LocationEngine: CLLocationManagerDelegate {
     os_log(.debug, log: oslog, "stationary_geofence_exit recovering tracking")
     log("geofence-exit", ["region": region.identifier])
 
-    // iOS relaunched us — restart GPS if we were tracking
+    // iOS relaunched us — restart GPS only if a workout session is still active
     if !isWatching && timeBasedWatchId == nil {
-      // Restore last known config and restart
+      guard UserDefaults.standard.bool(forKey: sessionActiveKey) else {
+        clearWatchState()
+        return
+      }
       restoreWatchIfNeeded()
     }
 

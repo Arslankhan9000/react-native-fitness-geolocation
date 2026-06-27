@@ -1,7 +1,8 @@
 import { Linking, NativeModules, Platform } from 'react-native';
 import type { OEMBatteryInfo } from './types';
+import { getFitnessGeolocationNative } from './native/getNativeModule';
 
-const Native = NativeModules.FitnessGeolocation;
+const Native = getFitnessGeolocationNative();
 
 /**
  * OEM Battery Manager — handles per-manufacturer battery optimization settings.

@@ -1,5 +1,64 @@
 # Changelog
 
+## 3.0.0
+
+### HTTP sync pipeline (Transistorsoft parity)
+- **Wired `autoSync`**: triggers `httpSyncAsync()` after every successful SQLite persist (iOS + Android)
+- **Batch loop**: `httpSyncAll()` uploads up to 20 batches until queue empty
+- **`autoSyncThreshold`**: accumulate N points before auto-flush
+- **`httpResponse` events**: properly routed to JS `Geolocation.onHttp()`
+
+### Background lifecycle API
+- Unified `Geolocation` / `BackgroundGeolocation` module: `ready`, `setConfig`, `getState`, `start`, `stop`
+- `changePace`, `startSchedule`, `stopSchedule`, `startGeofences`
+- `uploadToServer`, `getLocations`, `destroyLocation`, `insertLocation`
+- Native events: `location`, `motionchange`, `heartbeat`, `schedule`, `enabledchange`
+
+### Schedule engine
+- `ScheduleManager` (iOS + Android): cron windows `"1-7 09:00-17:00"` / geofence mode
+- Evaluated on each GPS fix + app lifecycle
+
+### Native logger
+- `NativeLogger` + `Logger.ts`: SQLite log ring, `getLog`, `destroyLog`, `log()`
+- Native field diagnostics for support teams
+
+### iOS intelligence engines (wired)
+- `AdaptiveGPSManager` → dynamic accuracy/distance filter on hot path
+- `IntelligentAutoPauseEngine` → context-aware auto-pause (replaces naive speed threshold)
+- `geofencesChange` events on iOS geofence add
+
+### Android fixes
+- `FitnessHeadlessTaskService` in `HeadlessTaskManager.kt` (removed duplicate file)
+- Android Live Activity bridge: `setLiveActivityEnabled`, `getLiveActivityEnabled`
+
+### Polygon geofences + provider events + logger shipping
+- `GeoMath` (iOS/Android/TS): ray-cast polygon, bbox reject
+- `vertices` on `Geofence` type; fleet polygon enter/exit/dwell
+- `ProviderMonitor`: live `powerSaveChange`, `connectivityChange`, `providerChange`
+- `Logger.uploadLog`, `Logger.emailLog`; `requestTemporaryFullAccuracy` (iOS)
+- `Geolocation.reset`; removed ~30 KB dead Swift (GeofenceManager, KalmanFilter, DeadReckoning)
+
+### Platform modernization (2026)
+- **Android 9+ (API 28)** minimum; compile/target **API 35** defaults (API 36-ready via host `ext`)
+- `PlatformCompat` — unified FGS launcher, boot action handling, `RECEIVER_NOT_EXPORTED` receivers
+- `ProviderMonitor` — `NetworkCallback` replaces deprecated `CONNECTIVITY_ACTION`
+- `POST_NOTIFICATIONS` runtime flow in `PermissionManager` (Android 13+)
+- Foreground detection via RN lifecycle (replaces `getRunningAppProcesses`)
+- API 33+ typed `getSerializableExtra` / `PackageInfoFlags`
+- **iOS 16.1** pod minimum (ActivityKit floor); iOS 17+ background session documented
+- `PlatformSupport` TS module — support matrix export
+- `peerDependencies`: `react-native >= 0.76.0` (New Architecture era)
+
+### Live Activities (iOS 16.1+)
+- Snapshot-safe lock screen timers via `Text(_:style: .timer)` and `ProgressView(timerInterval:)`
+- Shared `ios/Shared/WorkoutLiveActivityAttributes.swift` + `WorkoutLiveActivityViews.swift`
+- Pause-aware elapsed time (`totalPausedSeconds`, `frozenElapsedSeconds`)
+- Dynamic Island: `keylineTint`, deep link `fitnessgeolocation://workout`, minimal preview
+- `activityType` moved to static attributes (set once per session)
+
+- `scripts/ai-test-patterns.json` (30 patterns), `scripts/run-ai-tests.js`
+- `yarn test` / `yarn test:all`; Jest `__tests__/geoMath.test.ts`, `api-surface.test.ts`
+
 ## 2.1.0
 
 ### iOS — Live Activities (Lock Screen & Dynamic Island)

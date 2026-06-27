@@ -1,12 +1,13 @@
-import { NativeEventEmitter, NativeModules } from 'react-native';
+import { NativeEventEmitter } from 'react-native';
 import type {
   ProviderChangeEvent,
   ConnectivityChangeEvent,
   LocationSubscription,
   SensorState,
 } from './types';
+import { getFitnessGeolocationNative } from './native/getNativeModule';
 
-const Native = NativeModules.FitnessGeolocation;
+const Native = getFitnessGeolocationNative();
 const emitter = new NativeEventEmitter(Native);
 const TAG = 'FitnessGeoProvider';
 

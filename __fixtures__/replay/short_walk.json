@@ -1,0 +1,7 @@
+[
+  { "latitude": 37.000000, "longitude": -122.000000, "accuracy": 5, "timestamp": 1000 },
+  { "latitude": 37.000050, "longitude": -122.000050, "accuracy": 5, "timestamp": 4000 },
+  { "latitude": 37.000100, "longitude": -122.000100, "accuracy": 5, "timestamp": 7000 },
+  { "latitude": 37.000150, "longitude": -122.000150, "accuracy": 5, "timestamp": 10000 }
+]
+

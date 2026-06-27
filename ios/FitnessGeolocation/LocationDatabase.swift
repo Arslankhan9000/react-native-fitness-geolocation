@@ -18,6 +18,7 @@ struct StoredLocation {
   let provider: String
   let motionState: String
   let confidence: Double
+  let qualityJson: String?
   let sessionId: String
   let deliveredToJs: Bool
   let distanceFromPrev: Double
@@ -103,9 +104,9 @@ final class LocationDatabase {
     let insertSQL = """
     INSERT OR REPLACE INTO locations
     (id, latitude, longitude, accuracy, speed, heading, altitude, timestamp,
-     battery_level, signal_strength, provider, motion_state, confidence,
+     battery_level, signal_strength, provider, motion_state, confidence, quality_json,
      session_id, delivered_to_js, distance_from_prev, cumulative_distance)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
     sqlite3_prepare_v2(db, insertSQL, -1, &insertStmt, nil)
 
@@ -134,6 +135,7 @@ final class LocationDatabase {
       provider TEXT,
       motion_state TEXT,
       confidence REAL,
+      quality_json TEXT,
       session_id TEXT,
       delivered_to_js INTEGER DEFAULT 0,
       distance_from_prev REAL DEFAULT 0,
@@ -166,6 +168,50 @@ final class LocationDatabase {
     CREATE INDEX IF NOT EXISTS idx_sessions_uploaded ON sessions(uploaded);
     """
     queue.sync { sqlite3_exec(db, sessionsSQL, nil, nil, nil) }
+
+    let diagSQL = """
+    CREATE TABLE IF NOT EXISTS diagnostics_timeline (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT,
+      level TEXT NOT NULL,
+      event TEXT NOT NULL,
+      data_json TEXT,
+      timestamp INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_diag_session_ts ON diagnostics_timeline(session_id, timestamp);
+
+    CREATE TABLE IF NOT EXISTS motion_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT,
+      activity TEXT NOT NULL,
+      confidence REAL DEFAULT 0,
+      data_json TEXT,
+      timestamp INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_motion_session_ts ON motion_events(session_id, timestamp);
+
+    CREATE TABLE IF NOT EXISTS geofence_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT,
+      identifier TEXT NOT NULL,
+      action TEXT NOT NULL,
+      data_json TEXT,
+      timestamp INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_geofence_session_ts ON geofence_events(session_id, timestamp);
+
+    CREATE TABLE IF NOT EXISTS sync_queue (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      kind TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      attempts INTEGER DEFAULT 0,
+      last_error TEXT,
+      next_retry_ts INTEGER DEFAULT 0,
+      created_ts INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_sync_queue_retry ON sync_queue(next_retry_ts);
+    """
+    queue.sync { sqlite3_exec(db, diagSQL, nil, nil, nil) }
   }
 
   private func migrateIfNeeded() {
@@ -188,6 +234,68 @@ final class LocationDatabase {
       if !columns.contains("cumulative_distance") {
         sqlite3_exec(db, "ALTER TABLE locations ADD COLUMN cumulative_distance REAL DEFAULT 0", nil, nil, nil)
       }
+      if !columns.contains("quality_json") {
+        sqlite3_exec(db, "ALTER TABLE locations ADD COLUMN quality_json TEXT", nil, nil, nil)
+      }
+      sqlite3_exec(db, """
+        CREATE TABLE IF NOT EXISTS native_logs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          level TEXT NOT NULL,
+          message TEXT NOT NULL,
+          timestamp INTEGER NOT NULL
+        )
+      """, nil, nil, nil)
+      sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_native_logs_ts ON native_logs(timestamp)", nil, nil, nil)
+
+      // vNext tables (safe to create idempotently)
+      sqlite3_exec(db, """
+        CREATE TABLE IF NOT EXISTS diagnostics_timeline (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT,
+          level TEXT NOT NULL,
+          event TEXT NOT NULL,
+          data_json TEXT,
+          timestamp INTEGER NOT NULL
+        );
+      """, nil, nil, nil)
+      sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_diag_session_ts ON diagnostics_timeline(session_id, timestamp)", nil, nil, nil)
+
+      sqlite3_exec(db, """
+        CREATE TABLE IF NOT EXISTS motion_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT,
+          activity TEXT NOT NULL,
+          confidence REAL DEFAULT 0,
+          data_json TEXT,
+          timestamp INTEGER NOT NULL
+        );
+      """, nil, nil, nil)
+      sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_motion_session_ts ON motion_events(session_id, timestamp)", nil, nil, nil)
+
+      sqlite3_exec(db, """
+        CREATE TABLE IF NOT EXISTS geofence_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT,
+          identifier TEXT NOT NULL,
+          action TEXT NOT NULL,
+          data_json TEXT,
+          timestamp INTEGER NOT NULL
+        );
+      """, nil, nil, nil)
+      sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_geofence_session_ts ON geofence_events(session_id, timestamp)", nil, nil, nil)
+
+      sqlite3_exec(db, """
+        CREATE TABLE IF NOT EXISTS sync_queue (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          kind TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          attempts INTEGER DEFAULT 0,
+          last_error TEXT,
+          next_retry_ts INTEGER DEFAULT 0,
+          created_ts INTEGER NOT NULL
+        );
+      """, nil, nil, nil)
+      sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_sync_queue_retry ON sync_queue(next_retry_ts)", nil, nil, nil)
     }
   }
 
@@ -213,10 +321,15 @@ final class LocationDatabase {
       sqlite3_bind_text(stmt, 11, (location.provider as NSString).utf8String, -1, nil)
       sqlite3_bind_text(stmt, 12, (location.motionState as NSString).utf8String, -1, nil)
       sqlite3_bind_double(stmt, 13, location.confidence)
-      sqlite3_bind_text(stmt, 14, (location.sessionId as NSString).utf8String, -1, nil)
-      sqlite3_bind_int(stmt, 15, location.deliveredToJs ? Int32(1) : Int32(0))
-      sqlite3_bind_double(stmt, 16, location.distanceFromPrev)
-      sqlite3_bind_double(stmt, 17, location.cumulativeDistance)
+      if let q = location.qualityJson {
+        sqlite3_bind_text(stmt, 14, (q as NSString).utf8String, -1, nil)
+      } else {
+        sqlite3_bind_null(stmt, 14)
+      }
+      sqlite3_bind_text(stmt, 15, (location.sessionId as NSString).utf8String, -1, nil)
+      sqlite3_bind_int(stmt, 16, location.deliveredToJs ? Int32(1) : Int32(0))
+      sqlite3_bind_double(stmt, 17, location.distanceFromPrev)
+      sqlite3_bind_double(stmt, 18, location.cumulativeDistance)
 
       return sqlite3_step(stmt) == SQLITE_DONE
     }
@@ -298,6 +411,32 @@ final class LocationDatabase {
     queue.sync {
       sqlite3_exec(db, "DELETE FROM locations", nil, nil, nil)
       sqlite3_exec(db, "DELETE FROM sessions", nil, nil, nil)
+    }
+  }
+
+  func getAllLocations(limit: Int32 = 1000) -> [StoredLocation] {
+    return queue.sync {
+      let sql = "SELECT * FROM locations ORDER BY timestamp DESC LIMIT ?"
+      var stmt: OpaquePointer?
+      guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else { return [] }
+      defer { sqlite3_finalize(stmt) }
+      sqlite3_bind_int(stmt, 1, limit)
+      var results: [StoredLocation] = []
+      while sqlite3_step(stmt) == SQLITE_ROW {
+        if let loc = rowToLocation(stmt) { results.append(loc) }
+      }
+      return results
+    }
+  }
+
+  func destroyLocation(_ id: String) -> Bool {
+    return queue.sync {
+      var stmt: OpaquePointer?
+      let sql = "DELETE FROM locations WHERE id = ?"
+      guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else { return false }
+      defer { sqlite3_finalize(stmt) }
+      sqlite3_bind_text(stmt, 1, (id as NSString).utf8String, -1, nil)
+      return sqlite3_step(stmt) == SQLITE_DONE
     }
   }
 
@@ -475,10 +614,11 @@ final class LocationDatabase {
       provider: String(cString: sqlite3_column_text(stmt, 10)),
       motionState: String(cString: sqlite3_column_text(stmt, 11)),
       confidence: sqlite3_column_double(stmt, 12),
-      sessionId: String(cString: sqlite3_column_text(stmt, 13)),
-      deliveredToJs: sqlite3_column_int(stmt, 14) != 0,
-      distanceFromPrev: sqlite3_column_double(stmt, 15),
-      cumulativeDistance: sqlite3_column_double(stmt, 16)
+      qualityJson: sqlite3_column_text(stmt, 13).map { String(cString: $0) },
+      sessionId: String(cString: sqlite3_column_text(stmt, 14)),
+      deliveredToJs: sqlite3_column_int(stmt, 15) != 0,
+      distanceFromPrev: sqlite3_column_double(stmt, 16),
+      cumulativeDistance: sqlite3_column_double(stmt, 17)
     )
   }
 }
@@ -501,6 +641,7 @@ extension StoredLocation {
       "provider": provider,
       "motionState": motionState,
       "confidence": confidence,
+      "quality": qualityJson as Any,
       "distanceFromPrev": distanceFromPrev,
       "cumulativeDistance": cumulativeDistance,
     ]

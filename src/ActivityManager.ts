@@ -1,7 +1,9 @@
-import { AppState, NativeModules } from 'react-native';
+import { AppState } from 'react-native';
 import { TimeBasedTracker } from './TimeBasedTracker';
 import { SmartGPSController } from './SmartGPSController';
 import { PermissionManager } from './PermissionManager';
+import { getFitnessGeolocationNative } from './native/getNativeModule';
+import { resolveProfileDefaults } from './profiles/ActivityProfiles';
 import type {
   ActivityOptions,
   ActivityState,
@@ -13,8 +15,10 @@ import type {
   AutoResumeEvent,
   HeartbeatEvent,
 } from './types';
+import { activityEngine } from './engines/ActivityEngine';
+import { diagnosticsEngine } from './engines/DiagnosticsEngine';
 
-const Native = NativeModules.FitnessGeolocation;
+const Native = getFitnessGeolocationNative();
 
 type StateChangeCallback = (state: ActivityState) => void;
 type ActivityErrorCallback = (error: Error) => void;
@@ -184,9 +188,9 @@ export class ActivityManager {
 
     this.setState('preparing');
 
-    // Merge options
+    // Merge options with profile defaults (vNext routing)
     if (options) {
-      Object.assign(this.options, options);
+      Object.assign(this.options, resolveProfileDefaults({ ...this.options, ...options }));
       this.gpsController.configure({
         adaptiveInterval: this.options.adaptiveInterval,
         activeIntervalMs: this.options.intervalMs,
@@ -208,8 +212,13 @@ export class ActivityManager {
     }
 
     // 2. Create native session
-    const sessionId = await Native.createSession?.(this.options.name ?? 'Workout');
+    const sessionId = await activityEngine.createSession({
+      name: this.options.name ?? 'Workout',
+      activityType: this.options.activityType ?? 'running',
+      extras: null,
+    });
     this._sessionId = sessionId;
+    diagnosticsEngine.log('info', 'activity_start', { sessionId, activityType: this.options.activityType });
 
     // 3. Reset state
     this._startTime = Date.now();
@@ -395,15 +404,16 @@ export class ActivityManager {
 
     // Finalize session in native SQLite
     if (this._sessionId) {
-      await Native.endSession?.(this._sessionId, {
+      await activityEngine.endSession(this._sessionId, {
         totalDistance: this._totalDistance,
-        totalDuration: this._elapsedMs,
-        totalActiveDuration: correctActiveMs,
+        duration: Math.round(this._elapsedMs / 1000),
+        activeDuration: Math.round(correctActiveMs / 1000),
         maxSpeed: this._maxSpeed,
         elevationGain: this._totalElevationGain,
         averageAccuracy: this.getAverageAccuracy(),
         pointCount: this._pointCount,
-      });
+        pauseCount: this._pauseCount,
+      } as any);
     }
 
     // Cleanup subscriptions

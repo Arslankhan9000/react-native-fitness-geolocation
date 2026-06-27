@@ -6,6 +6,8 @@ import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.VibrationEffect
+import android.os.Vibrator
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -157,17 +159,65 @@ interface HeartbeatEngineDelegate {
 
 class DebugSoundManager(private val context: Context) {
   var soundEnabled = true
+  var vibrationEnabled = true
+  var feedbackThrottleMs: Long = 1500L
+
+  private val lastPlayedAt = mutableMapOf<String, Long>()
+  private var lastAnyAt: Long = 0L
+  private val perSoundThrottleMs = mapOf(
+    "heartbeat" to 15_000L,
+    "location_recorded" to 4_000L,
+    "location_error" to 3_000L,
+    "motionchange_true" to 2_000L,
+    "motionchange_false" to 2_000L,
+    "geofence_enter" to 2_500L,
+    "geofence_exit" to 2_500L,
+    "stop_timeout_start" to 2_500L,
+    "stop_timeout_cancel" to 2_500L,
+    "stop_detection_delay" to 2_500L,
+  )
 
   fun play(sound: String) {
     if (!soundEnabled) return
+    val now = System.currentTimeMillis()
+    val min = perSoundThrottleMs[sound] ?: feedbackThrottleMs
+    val last = lastPlayedAt[sound] ?: 0L
+    if (now - last < min) return
+    if (now - lastAnyAt < (feedbackThrottleMs / 2)) return
     try {
       val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
       val ringtone = RingtoneManager.getRingtone(context, uri)
       ringtone.play()
       Log.d("FitnessGeoSound", "sound: $sound")
+      lastPlayedAt[sound] = now
+      lastAnyAt = now
     } catch (e: Exception) {
       Log.w("FitnessGeoSound", "sound_failed: ${e.message}")
     }
+  }
+
+  fun vibrate(kind: String) {
+    if (!vibrationEnabled) return
+    val now = System.currentTimeMillis()
+    val min = perSoundThrottleMs[kind] ?: feedbackThrottleMs
+    val last = lastPlayedAt["v:$kind"] ?: 0L
+    if (now - last < min) return
+    try {
+      val v = context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator ?: return
+      if (!v.hasVibrator()) return
+      val durationMs = when (kind) {
+        "location_error" -> 160L
+        "geofence_enter", "geofence_exit" -> 120L
+        else -> 70L
+      }
+      if (Build.VERSION.SDK_INT >= 26) {
+        v.vibrate(VibrationEffect.createOneShot(durationMs, VibrationEffect.DEFAULT_AMPLITUDE))
+      } else {
+        @Suppress("DEPRECATION")
+        v.vibrate(durationMs)
+      }
+      lastPlayedAt["v:$kind"] = now
+    } catch (_: Exception) {}
   }
 }
 
@@ -201,6 +251,9 @@ class DebugMonitor(private val context: Context) {
     "moving" to "Moving",
   )
   private var notificationTitle = "Tracking activity"
+  private var notificationDebounceMs: Long = 1200L
+  private var lastNotificationText: String? = null
+  private var lastNotificationUpdateAt: Long = 0L
 
   var enabled: Boolean
     get() = _enabled
@@ -228,6 +281,7 @@ class DebugMonitor(private val context: Context) {
 
       override fun onSound(sound: String) {
         sounds.play(sound)
+        sounds.vibrate(sound)
       }
     }
 
@@ -238,6 +292,7 @@ class DebugMonitor(private val context: Context) {
 
       override fun onSound(sound: String) {
         sounds.play(sound)
+        sounds.vibrate(sound)
       }
     }
   }
@@ -246,6 +301,9 @@ class DebugMonitor(private val context: Context) {
     config["stopTimeoutMinutes"]?.let { stateMachine.stopTimeoutMinutes = (it as Number).toLong() }
     config["heartbeatIntervalSeconds"]?.let { heartbeat.intervalSeconds = (it as Number).toLong() }
     config["sound"]?.let { sounds.soundEnabled = it as Boolean }
+    config["vibration"]?.let { sounds.vibrationEnabled = it as Boolean }
+    config["feedbackThrottleMs"]?.let { sounds.feedbackThrottleMs = (it as Number).toLong() }
+    config["notificationDebounceMs"]?.let { notificationDebounceMs = (it as Number).toLong() }
 
     config["notificationTextStationary"]?.let { notificationTexts["stationary"] = it.toString() }
     config["notificationTextWalking"]?.let { notificationTexts["walking"] = it.toString() }
@@ -299,12 +357,19 @@ class DebugMonitor(private val context: Context) {
         notificationTexts["stationary"] ?: "Stationary"
     }
 
+    val now = System.currentTimeMillis()
+    if (text == lastNotificationText && now - lastNotificationUpdateAt < notificationDebounceMs) return
+    if (now - lastNotificationUpdateAt < notificationDebounceMs) return
+
     // Store for FitnessLocationService to read
     context.getSharedPreferences("fitness_geolocation", Context.MODE_PRIVATE)
       .edit()
       .putString("notification_text", text)
       .putString("notification_title", notificationTitle)
       .apply()
+
+    lastNotificationText = text
+    lastNotificationUpdateAt = now
   }
 
   private fun emitLifecycle(event: String, message: String, data: Map<String, Any?> = emptyMap()) {

@@ -1,7 +1,8 @@
-import { AppRegistry, NativeModules } from 'react-native';
+import { AppRegistry } from 'react-native';
 import type { HeadlessEvent, HeadlessTaskCallback } from './types';
+import { getFitnessGeolocationNative } from './native/getNativeModule';
 
-const Native = NativeModules.FitnessGeolocation;
+const Native = getFitnessGeolocationNative();
 
 const TAG = 'FitnessGeolocationHeadlessTask';
 

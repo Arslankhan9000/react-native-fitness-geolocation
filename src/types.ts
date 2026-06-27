@@ -1,5 +1,7 @@
 /** Compatible with @react-native-community/geolocation types */
 
+import type { LogLevelValue } from './config/LogLevel';
+
 export const PositionError = {
   PERMISSION_DENIED: 1,
   POSITION_UNAVAILABLE: 2,
@@ -42,6 +44,19 @@ export interface TimeBasedLocation {
   batteryLevel: number;
   /** Current motion state */
   motionState: MotionActivityType;
+  /** Per-point quality scoring (native-first, optional) */
+  quality?: QualityScore;
+}
+
+export interface QualityScore {
+  /** 0..1: GPS position confidence based on accuracy and timestamp sanity */
+  positionConfidence: number;
+  /** 0..1: Motion confidence based on activity recognition */
+  motionConfidence: number;
+  /** 0..1: Heading confidence based on variance/accuracy */
+  headingConfidence: number;
+  /** 0..1: Activity classification confidence */
+  activityConfidence: number;
 }
 
 export interface GeolocationError {
@@ -98,11 +113,68 @@ export interface GeolocationConfiguration {
 
 export type LocationSubscription = { remove: () => void };
 
-export interface BackgroundGeolocationConfig extends GeolocationOptions, GeolocationConfiguration {
+export interface LoggerConfig extends DebugMonitorConfig {
+  /**
+   * Native SQLite log verbosity (Transistorsoft-style).
+   * @default LogLevel.Off
+   */
+  logLevel?: LogLevelValue;
+  /** Days to retain native log rows (default: 3) */
+  logMaxDays?: number;
+}
+
+// ─── Compound Configuration Groups (Transistorsoft-style) ───────────────────
+
+export interface GeoConfig extends GeolocationOptions, GeolocationConfiguration {}
+
+export interface ActivityConfig {
+  trackingMode?: TrackingMode;
+  enableMotion?: boolean;
+  includePedometer?: boolean;
+  /** Seconds between heartbeat events (default: 60) */
+  heartbeatInterval?: number;
+}
+
+export interface AppConfig {
   startOnReady?: boolean;
   stopOnTerminate?: boolean;
   notificationTitle?: string;
   notificationText?: string;
+}
+
+export interface PersistenceConfig {
+  /** Max days to persist locations in SQLite before auto-delete (default: 7) */
+  maxDaysToPersist?: number;
+}
+
+export interface BackgroundGeolocationConfig extends GeolocationOptions, GeolocationConfiguration, Partial<HttpConfig> {
+  /** Geolocation + permissions config group (Transistorsoft-style). */
+  geolocation?: GeoConfig;
+  /** HTTP / networking config group (Transistorsoft-style). */
+  http?: HttpConfig;
+  /** Motion / activity-recognition config group (Transistorsoft-style). */
+  activity?: ActivityConfig;
+  /** Persistence config group (Transistorsoft-style). */
+  persistence?: PersistenceConfig;
+  /** App lifecycle config group (Transistorsoft-style). */
+  app?: AppConfig;
+
+  startOnReady?: boolean;
+  stopOnTerminate?: boolean;
+  notificationTitle?: string;
+  notificationText?: string;
+  /** Cron windows e.g. `"1-7 09:00-17:00"` */
+  schedule?: string[];
+  heartbeatInterval?: number;
+  autoSyncThreshold?: number;
+  maxBatchSize?: number;
+  /**
+   * Legacy debug flag — prefer `logger.debug`.
+   * When true, enables sound/vibration + debug notifications (not for production).
+   */
+  debug?: boolean;
+  /** Logger + debug monitor block (Transistorsoft-style nested config) */
+  logger?: LoggerConfig;
 }
 
 export interface BackgroundGeolocationState extends FitnessEngineState {
@@ -178,6 +250,8 @@ export interface FitnessPermissionResult {
   foregroundGranted: boolean;
   backgroundGranted: boolean;
   motionGranted: boolean;
+  /** Android 13+ POST_NOTIFICATIONS — required for foreground service notifications */
+  notificationsGranted: boolean;
   status: 'ready' | 'foreground_only' | 'denied';
   message?: string;
 }
@@ -189,6 +263,18 @@ export interface DebugMonitorConfig {
   debug?: boolean;
   /** Enable sound effects in debug mode (default: true) */
   sound?: boolean;
+  /** Enable vibration / haptics in debug mode (default: true on Android, false on iOS) */
+  vibration?: boolean;
+  /**
+   * Minimum time between repeated feedback for the same event/sound (ms).
+   * Helps prevent noisy loops when the engine emits frequent updates.
+   */
+  feedbackThrottleMs?: number;
+  /**
+   * Minimum time between Android notification text updates (ms).
+   * Prevents rapid updates from spamming NotificationManager.
+   */
+  notificationDebounceMs?: number;
   /** Minutes of stillness before transitioning to stationary state (default: 5) */
   stopTimeout?: number;
   /** Seconds between heartbeat events (default: 60) */
@@ -244,7 +330,7 @@ export interface ActivityOptions {
   /** Activity name (default: "Workout") */
   name?: string;
   /** Activity type (default: "running") */
-  activityType?: 'running' | 'walking' | 'cycling' | 'hiking' | 'other';
+  activityType?: 'running' | 'walking' | 'cycling' | 'hiking' | 'driving' | 'other';
   /** Tracking mode (default: 'fitness') */
   trackingMode?: TrackingMode;
   /** Time-based tracking interval in ms (default: 3000) */
@@ -376,6 +462,36 @@ export interface OEMBatteryInfo {
   oemSettingsAppName: string | null;
 }
 
+export type HealthIssueCode =
+  | 'PERMISSIONS_DENIED'
+  | 'GPS_DISABLED'
+  | 'POWER_SAVE_ON'
+  | 'BATTERY_OPTIMIZATION_ON'
+  | 'SENSORS_MISSING'
+  | 'NETWORK_OFFLINE'
+  | 'OEM_RESTRICTIONS';
+
+export interface HealthIssue {
+  code: HealthIssueCode;
+  severity: 'info' | 'warn' | 'error';
+  message: string;
+  data?: Record<string, unknown>;
+}
+
+export interface HealthRecommendation {
+  title: string;
+  message: string;
+  action?: 'open_settings' | 'request_permission' | 'disable_optimization' | 'none';
+  data?: Record<string, unknown>;
+}
+
+export interface TrackingHealth {
+  score: number; // 0..100
+  issues: HealthIssue[];
+  recommendations: HealthRecommendation[];
+  signals: Record<string, unknown>;
+}
+
 export interface DevLogEntry {
   level: 'debug' | 'info' | 'warn' | 'error';
   tag: string;
@@ -430,23 +546,17 @@ export interface HttpEvent {
 // ─── Geofencing Types ──────────────────────────────────────────────────────
 
 export interface Geofence {
-  /** Unique identifier for this geofence */
   identifier: string;
-  /** Latitude of center point */
-  latitude: number;
-  /** Longitude of center point */
-  longitude: number;
-  /** Radius in meters */
-  radius: number;
-  /** Notify on entry (default: true) */
+  /** Circular center latitude (omit when using vertices) */
+  latitude?: number;
+  longitude?: number;
+  radius?: number;
+  /** Polygon vertices for fleet/zone geofences */
+  vertices?: Array<{ latitude: number; longitude: number }>;
   notifyOnEntry?: boolean;
-  /** Notify on exit (default: true) */
   notifyOnExit?: boolean;
-  /** Notify on dwell (default: false) */
   notifyOnDwell?: boolean;
-  /** Time in ms before dwell notification fires (default: 30000) */
   loiteringDelayMs?: number;
-  /** Custom metadata attached to this geofence */
   extras?: Record<string, unknown>;
 }
 

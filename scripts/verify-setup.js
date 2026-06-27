@@ -46,6 +46,10 @@ if (plistPath) {
     'Add <string>location</string> to UIBackgroundModes array');
   check('iOS NSMotionUsageDescription (optional)', plist.includes('NSMotionUsageDescription'),
     'Add NSMotionUsageDescription for MotionEngine auto-pause');
+  check('iOS NSSupportsLiveActivities (optional)', plist.includes('NSSupportsLiveActivities'),
+    'Add NSSupportsLiveActivities=true for Live Activities on lock screen');
+  check('iOS NSBackgroundActivitySessionEnabled (optional)', plist.includes('NSBackgroundActivitySessionEnabled'),
+    'Add NSBackgroundActivitySessionEnabled=true for iOS 17+ background GPS session');
 } else {
   issues.push('⚠️  iOS Info.plist not found — skip if Android-only');
 }
@@ -64,6 +68,8 @@ if (fs.existsSync(manifestPath)) {
     'Ensure the package AndroidManifest.xml is included by React Native autolinking');
   check('Android ACTIVITY_RECOGNITION (optional)', mergedSource.includes('ACTIVITY_RECOGNITION'),
     'Add ACTIVITY_RECOGNITION for MotionEngine auto-pause');
+  check('Android POST_NOTIFICATIONS', mergedSource.includes('POST_NOTIFICATIONS'),
+    'Add POST_NOTIFICATIONS for foreground service notifications (API 33+)');
 } else {
   issues.push('⚠️  AndroidManifest.xml not found — skip if iOS-only');
 }

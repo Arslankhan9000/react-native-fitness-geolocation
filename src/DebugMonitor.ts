@@ -1,4 +1,4 @@
-import { NativeEventEmitter, NativeModules } from 'react-native';
+import { NativeEventEmitter, Platform } from 'react-native';
 import type {
   DebugMonitorConfig,
   DebugMotionState,
@@ -6,8 +6,9 @@ import type {
   DebugLifecycleSound,
   LocationSubscription,
 } from './types';
+import { getFitnessGeolocationNative } from './native/getNativeModule';
 
-const Native = NativeModules.FitnessGeolocation;
+const Native = getFitnessGeolocationNative();
 const emitter = new NativeEventEmitter(Native);
 const TAG = 'FitnessGeoDebug';
 
@@ -62,6 +63,9 @@ export class DebugMonitor {
     const merged: DebugMonitorConfig = {
       debug: true,
       sound: config.sound ?? true,
+      vibration: config.vibration ?? (Platform.OS === 'android'),
+      feedbackThrottleMs: config.feedbackThrottleMs ?? 1500,
+      notificationDebounceMs: config.notificationDebounceMs ?? 1200,
       stopTimeout: config.stopTimeout ?? 5,
       heartbeatInterval: config.heartbeatInterval ?? 60,
       stopAfterElapsedMinutes: config.stopAfterElapsedMinutes ?? 0,
@@ -82,6 +86,9 @@ export class DebugMonitor {
       await Native.setDebugMonitorConfig?.({
         enabled: merged.debug,
         sound: merged.sound,
+        vibration: merged.vibration,
+        feedbackThrottleMs: merged.feedbackThrottleMs,
+        notificationDebounceMs: merged.notificationDebounceMs,
         stopTimeoutMinutes: merged.stopTimeout,
         heartbeatIntervalSeconds: merged.heartbeatInterval,
         stopAfterElapsedMinutes: merged.stopAfterElapsedMinutes,
